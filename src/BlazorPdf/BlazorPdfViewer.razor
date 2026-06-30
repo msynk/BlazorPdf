@@ -1,0 +1,108 @@
+@namespace BlazorPdf
+@using System.Globalization
+
+<div class="blazorpdf-viewer" style="height:@Height" @ref="_viewerRef">
+    @if (ShowToolbar)
+    {
+        <div class="blazorpdf-toolbar">
+            <div class="blazorpdf-group">
+                <button class="blazorpdf-btn" title="Pages" @onclick="ToggleThumbnails" disabled="@(_pages.Count == 0)">
+                    <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>
+                </button>
+            </div>
+
+            <div class="blazorpdf-group">
+                <button class="blazorpdf-btn" title="Previous page" @onclick="PrevPage" disabled="@(_currentPage <= 1)">
+                    <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+                </button>
+                <input class="blazorpdf-page-input" type="number" min="1" max="@_pages.Count"
+                       value="@_currentPage" @onchange="OnPageInput" disabled="@(_pages.Count == 0)" />
+                <span class="blazorpdf-page-total">/ @_pages.Count</span>
+                <button class="blazorpdf-btn" title="Next page" @onclick="NextPage" disabled="@(_currentPage >= _pages.Count)">
+                    <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+                </button>
+            </div>
+
+            <div class="blazorpdf-group">
+                <button class="blazorpdf-btn" title="Zoom out" @onclick="ZoomOut" disabled="@(_pages.Count == 0)">
+                    <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                </button>
+                <span class="blazorpdf-zoom">@((int)Math.Round(_zoom * 100))%</span>
+                <button class="blazorpdf-btn" title="Zoom in" @onclick="ZoomIn" disabled="@(_pages.Count == 0)">
+                    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+                <select class="blazorpdf-select" @onchange="OnFitChanged" disabled="@(_pages.Count == 0)">
+                    @if (_zoomMode == PdfZoomMode.Custom)
+                    {
+                        <option value="Custom" selected>@((int)Math.Round(_zoom * 100))%</option>
+                    }
+                    <option value="FitWidth" selected="@(_zoomMode == PdfZoomMode.FitWidth)">Fit width</option>
+                    <option value="FitPage" selected="@(_zoomMode == PdfZoomMode.FitPage)">Fit page</option>
+                    <option value="ActualSize" selected="@(_zoomMode == PdfZoomMode.ActualSize)">100%</option>
+                </select>
+            </div>
+
+            <div class="blazorpdf-title">@(_source?.FileName ?? "BlazorPdf")</div>
+
+            <div class="blazorpdf-group blazorpdf-right">
+                <button class="blazorpdf-btn" title="Rotate" @onclick="RotateClockwise" disabled="@(_pages.Count == 0)">
+                    <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>
+                </button>
+                <button class="blazorpdf-btn" title="Download" @onclick="DownloadAsync" disabled="@(_source?.Bytes is null)">
+                    <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+                </button>
+                <button class="blazorpdf-btn" title="Fullscreen" @onclick="ToggleFullscreen">
+                    <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+                </button>
+            </div>
+        </div>
+    }
+
+    <div class="blazorpdf-body">
+        @if (_showThumbnails && _pages.Count > 0)
+        {
+            <div class="blazorpdf-thumbs">
+                @for (int i = 0; i < _pages.Count; i++)
+                {
+                    int pageNo = i + 1;
+                    <div class="blazorpdf-thumb @(pageNo == _currentPage ? "active" : "")" @onclick="() => GoToPage(pageNo)">
+                        <div class="blazorpdf-thumb-svg">@_pages[i]</div>
+                        <span class="blazorpdf-thumb-label">@pageNo</span>
+                    </div>
+                }
+            </div>
+        }
+
+        <div class="blazorpdf-surface" @ref="_containerRef">
+            @if (_source is null)
+            {
+                <div class="blazorpdf-empty">No document loaded.</div>
+            }
+            else if (_pages.Count == 0)
+            {
+                <div class="blazorpdf-empty">@_status</div>
+            }
+            else
+            {
+                <div class="blazorpdf-pages">
+                    @for (int i = 0; i < _pages.Count; i++)
+                    {
+                        <div class="blazorpdf-page" data-page="@(i + 1)" style="@PageStyle(i)">
+                            @_pages[i]
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private async Task OnFitChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<PdfZoomMode>(e.Value?.ToString(), out var mode))
+        {
+            await SetZoomMode(mode);
+        }
+    }
+}

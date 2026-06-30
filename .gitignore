@@ -1,0 +1,11 @@
+## Build output
+bin/
+obj/
+artifacts/
+
+## Validation harness output
+validation-pdfs/
+
+## IDE
+.vs/
+*.user

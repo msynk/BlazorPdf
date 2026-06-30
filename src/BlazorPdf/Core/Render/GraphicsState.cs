@@ -1,0 +1,56 @@
+// Clean-room C# port of the graphics-state tracking from pdf.js rendering
+// (`src/display/canvas.js` / `src/core/evaluator.js`). See NOTICE.
+
+using BlazorPdf.Core.Fonts;
+using BlazorPdf.Core.Geometry;
+
+namespace BlazorPdf.Core.Render;
+
+/// <summary>
+/// The mutable PDF graphics state: current transform, colors, line width and
+/// the full text state. Pushed and popped by the <c>q</c> / <c>Q</c> operators.
+/// </summary>
+public sealed class GraphicsState
+{
+    public Matrix Ctm { get; set; } = Matrix.Identity;
+
+    public string FillColor { get; set; } = "rgb(0,0,0)";
+    public string StrokeColor { get; set; } = "rgb(0,0,0)";
+    public string? FillPattern { get; set; }   // /Pattern resource name for scn
+    public string BlendMode { get; set; } = ""; // CSS mix-blend-mode, "" = normal
+    public double FillAlpha { get; set; } = 1.0;
+    public double StrokeAlpha { get; set; } = 1.0;
+    public double LineWidth { get; set; } = 1.0;
+
+    // Text state.
+    public PdfFont? Font { get; set; }
+    public string? FontResourceName { get; set; }
+    public double FontSize { get; set; }
+    public double CharSpacing { get; set; }
+    public double WordSpacing { get; set; }
+    public double Leading { get; set; }
+    public double HorizScale { get; set; } = 1.0; // Tz / 100
+    public double TextRise { get; set; }
+    public int RenderMode { get; set; }
+
+    public GraphicsState Clone() => new()
+    {
+        Ctm = Ctm,
+        FillColor = FillColor,
+        StrokeColor = StrokeColor,
+        FillPattern = FillPattern,
+        BlendMode = BlendMode,
+        FillAlpha = FillAlpha,
+        StrokeAlpha = StrokeAlpha,
+        LineWidth = LineWidth,
+        Font = Font,
+        FontResourceName = FontResourceName,
+        FontSize = FontSize,
+        CharSpacing = CharSpacing,
+        WordSpacing = WordSpacing,
+        Leading = Leading,
+        HorizScale = HorizScale,
+        TextRise = TextRise,
+        RenderMode = RenderMode,
+    };
+}

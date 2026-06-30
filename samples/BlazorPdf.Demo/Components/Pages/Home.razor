@@ -1,0 +1,56 @@
+﻿@page "/"
+@rendermode InteractiveServer
+
+<PageTitle>BlazorPdf demo</PageTitle>
+
+<div class="page">
+    <h1>BlazorPdf</h1>
+    <p>A pure-C# PDF viewer for Blazor — a clean-room port of pdf.js that renders to plain SVG DOM elements.</p>
+
+    <div class="controls">
+        <button @onclick="LoadGeneratedBytes">Load generated PDF</button>
+
+        <label class="upload">
+            Upload a PDF
+            <InputFile OnChange="LoadUploaded" accept="application/pdf" />
+        </label>
+
+        <span class="status">@_status</span>
+    </div>
+
+    <BlazorPdfViewer Source="_source"
+                     Height="800px"
+                     InitialZoomMode="PdfZoomMode.FitWidth"
+                     OnDocumentLoaded="OnLoaded"
+                     OnError="OnViewerError" />
+</div>
+
+@code {
+    private PdfSource? _source;
+    private string _status = "Pick a source above.";
+
+    protected override void OnInitialized()
+        => _source = PdfSource.FromBytes(SamplePdf.Build(pages: 3), "sample.pdf");
+
+    private void LoadGeneratedBytes()
+    {
+        _source = PdfSource.FromBytes(SamplePdf.Build(pages: 5, title: "Generated"), "generated.pdf");
+        _status = "Loaded 5-page generated PDF.";
+    }
+
+    private void OnLoaded() => _status = "Document loaded.";
+
+    private void OnViewerError(string message) => _status = $"Error: {message}";
+
+    private async Task LoadUploaded(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+
+        using var stream = file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+        using var memory = new MemoryStream();
+        await stream.CopyToAsync(memory);
+        _source = PdfSource.FromBytes(memory.ToArray(), file.Name);
+        _status = $"Loaded {file.Name}.";
+    }
+}

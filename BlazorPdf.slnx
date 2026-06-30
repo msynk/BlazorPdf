@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/BlazorPdf.Demo/BlazorPdf.Demo.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/BlazorPdf/BlazorPdf.csproj" />
+    <Project Path="src/BlazorPdf0/BlazorPdf0.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BlazorPdf.Tests/BlazorPdf.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/BlazorPdf.Validate/BlazorPdf.Validate.csproj" />
+  </Folder>
+</Solution>

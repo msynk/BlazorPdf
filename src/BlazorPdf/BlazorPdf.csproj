@@ -1,0 +1,45 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>BlazorPdf</AssemblyName>
+    <RootNamespace>BlazorPdf</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>BlazorPdf</PackageId>
+    <Version>0.2.0</Version>
+    <Authors>BlazorPdf contributors</Authors>
+    <Description>A pure-C# PDF viewer component for Blazor. The rendering engine is a clean-room C# port of Mozilla pdf.js.</Description>
+    <PackageTags>blazor;pdf;viewer;component;pdfjs;razor</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="BlazorPdf.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Condition="Exists('README.md')" />
+    <None Include="NOTICE" Pack="true" PackagePath="\" Condition="Exists('NOTICE')" />
+  </ItemGroup>
+
+</Project>
+
