@@ -27,6 +27,8 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private PdfZoomMode _zoomMode = PdfZoomMode.FitWidth;
     private int _rotation;
     private bool _showThumbnails;
+    private bool _showOutline;
+    private IReadOnlyList<OutlineItem> _outline = Array.Empty<OutlineItem>();
 
     private bool _showSearch;
     private string _searchQuery = "";
@@ -108,6 +110,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         _document = null;
         _searchTotal = 0;
         _searchIndex = -1;
+        _outline = Array.Empty<OutlineItem>();
 
         if (_source is null)
         {
@@ -125,6 +128,14 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             _document = PdfDocument.Load(_source.Bytes);
             RenderPages();
+            try
+            {
+                _outline = _document.Outline;
+            }
+            catch
+            {
+                _outline = Array.Empty<OutlineItem>();
+            }
             _status = $"{_document.PageCount} page(s).";
             _spyPending = true;
             await OnDocumentLoaded.InvokeAsync();
@@ -283,7 +294,42 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         }
     }
 
-    private void ToggleThumbnails() => _showThumbnails = !_showThumbnails;
+    private async Task PrintAsync()
+    {
+        if (_module is not null && _pages.Count > 0)
+        {
+            await _module.InvokeVoidAsync("printDocument", _containerRef);
+        }
+    }
+
+    private void ToggleThumbnails()
+    {
+        _showThumbnails = !_showThumbnails;
+        if (_showThumbnails)
+        {
+            _showOutline = false;
+        }
+    }
+
+    private void ToggleOutline()
+    {
+        _showOutline = !_showOutline;
+        if (_showOutline)
+        {
+            _showThumbnails = false;
+        }
+    }
+
+    /// <summary>Whether the document exposes any bookmarks.</summary>
+    public bool HasOutline => _outline.Count > 0;
+
+    private async Task OnOutlineClick(OutlineItem item)
+    {
+        if (item.PageNumber is int pageNo)
+        {
+            await GoToPage(pageNo);
+        }
+    }
 
     // ----- Search -----
 

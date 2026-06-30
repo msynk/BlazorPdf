@@ -12,6 +12,8 @@ public sealed class PdfDocument
 {
     private readonly XRef _xref;
     private List<PdfPage>? _pages;
+    private readonly Dictionary<Dict, int> _pageIndexByDict = new(ReferenceEqualityComparer.Instance);
+    private IReadOnlyList<OutlineItem>? _outline;
 
     private PdfDocument(XRef xref) => _xref = xref;
 
@@ -32,6 +34,20 @@ public sealed class PdfDocument
 
     /// <summary>Number of pages.</summary>
     public int PageCount => Pages.Count;
+
+    /// <summary>The document outline (bookmarks), empty when none is present.</summary>
+    public IReadOnlyList<OutlineItem> Outline
+    {
+        get
+        {
+            if (_outline is null)
+            {
+                _ = Pages; // ensure the page-index map is populated
+                _outline = new OutlineBuilder(_xref, Catalog, _pageIndexByDict).Build();
+            }
+            return _outline;
+        }
+    }
 
     /// <summary>Parses <paramref name="bytes"/> into a document model.</summary>
     public static PdfDocument Load(byte[] bytes)
@@ -108,6 +124,7 @@ public sealed class PdfDocument
         }
 
         double[] mediaBox = current.MediaBox ?? [0, 0, 612, 792]; // US Letter default
+        _pageIndexByDict[node] = pages.Count;
         pages.Add(new PdfPage(
             _xref,
             node,

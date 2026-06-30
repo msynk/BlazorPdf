@@ -163,19 +163,26 @@ public sealed class HtmlRenderer
                     new Matrix(op.Num(0), op.Num(1), op.Num(2), op.Num(3), op.Num(4), op.Num(5)));
                 break;
             case "w": _state.LineWidth = op.Num(0); break;
+            case "d": SetDash(op); break;
+            case "J": _state.LineCap = (int)op.Num(0); break;
+            case "j": _state.LineJoin = (int)op.Num(0); break;
+            case "M": break; // miter limit: not modeled by the fill-based stroker
+            case "ri": case "i": break; // rendering intent / flatness: no-op
             case "gs": ApplyExtGState(op); break;
 
             // Colors.
-            case "g": _state.FillColor = Gray(op.Num(0)); _state.FillPattern = null; break;
-            case "G": _state.StrokeColor = Gray(op.Num(0)); break;
-            case "rg": _state.FillColor = Rgb(op.Num(0), op.Num(1), op.Num(2)); _state.FillPattern = null; break;
-            case "RG": _state.StrokeColor = Rgb(op.Num(0), op.Num(1), op.Num(2)); break;
-            case "k": _state.FillColor = Cmyk(op.Num(0), op.Num(1), op.Num(2), op.Num(3)); _state.FillPattern = null; break;
-            case "K": _state.StrokeColor = Cmyk(op.Num(0), op.Num(1), op.Num(2), op.Num(3)); break;
+            case "cs": _state.FillColorSpace = ResolveColorSpace(op); SetDefaultColor(false); break;
+            case "CS": _state.StrokeColorSpace = ResolveColorSpace(op); SetDefaultColor(true); break;
+            case "g": _state.FillColorSpace = ColorSpace.Gray; _state.FillColor = Gray(op.Num(0)); _state.FillPattern = null; break;
+            case "G": _state.StrokeColorSpace = ColorSpace.Gray; _state.StrokeColor = Gray(op.Num(0)); break;
+            case "rg": _state.FillColorSpace = ColorSpace.Rgb; _state.FillColor = Rgb(op.Num(0), op.Num(1), op.Num(2)); _state.FillPattern = null; break;
+            case "RG": _state.StrokeColorSpace = ColorSpace.Rgb; _state.StrokeColor = Rgb(op.Num(0), op.Num(1), op.Num(2)); break;
+            case "k": _state.FillColorSpace = ColorSpace.Cmyk; _state.FillColor = Cmyk(op.Num(0), op.Num(1), op.Num(2), op.Num(3)); _state.FillPattern = null; break;
+            case "K": _state.StrokeColorSpace = ColorSpace.Cmyk; _state.StrokeColor = Cmyk(op.Num(0), op.Num(1), op.Num(2), op.Num(3)); break;
             case "sc":
             case "scn": SetFillColorN(op); break;
             case "SC":
-            case "SCN": _state.StrokeColor = ColorFromComponents(op) ?? _state.StrokeColor; break;
+            case "SCN": SetStrokeColorN(op); break;
 
             // Path construction.
             case "m": MoveTo(op.Num(0), op.Num(1)); break;
@@ -393,6 +400,7 @@ public sealed class HtmlRenderer
         double hw = Math.Max(width / 2.0, 0.35);
         var sb = new StringBuilder();
         bool any = false;
+        bool dashed = _state.DashArray is { Length: > 0 };
 
         foreach (var sub in _subpaths)
         {
@@ -403,6 +411,13 @@ public sealed class HtmlRenderer
                 any = true;
                 continue;
             }
+
+            if (dashed)
+            {
+                any |= AppendDashedSubpath(sb, sub, hw);
+                continue;
+            }
+
             for (int i = 0; i + 1 < sub.Count; i++)
             {
                 var (x0, y0) = sub[i];
@@ -426,6 +441,79 @@ public sealed class HtmlRenderer
         }
 
         return any ? sb.ToString().Trim() : null;
+    }
+
+    /// <summary>
+    /// Emits stroke quads for a single subpath broken up by the current dash
+    /// pattern (<see cref="GraphicsState.DashArray"/>), advancing a cycle cursor
+    /// across all segments so dashes are continuous across vertices.
+    /// </summary>
+    private bool AppendDashedSubpath(StringBuilder sb, List<(double X, double Y)> sub, double hw)
+    {
+        double[] dash = _state.DashArray!;
+        double cycle = dash.Sum();
+        if (cycle <= 0)
+        {
+            return false;
+        }
+
+        // Position within the dash cycle, honoring the initial phase.
+        double remaining = dash[0];
+        int dashIndex = 0;
+        bool on = true;
+        double phase = _state.DashPhase % cycle;
+        while (phase > 0)
+        {
+            if (phase >= remaining)
+            {
+                phase -= remaining;
+                dashIndex = (dashIndex + 1) % dash.Length;
+                remaining = dash[dashIndex];
+                on = !on;
+            }
+            else
+            {
+                remaining -= phase;
+                phase = 0;
+            }
+        }
+
+        bool any = false;
+        for (int i = 0; i + 1 < sub.Count; i++)
+        {
+            var (x0, y0) = sub[i];
+            var (x1, y1) = sub[i + 1];
+            double dx = x1 - x0, dy = y1 - y0;
+            double segLen = Math.Sqrt(dx * dx + dy * dy);
+            if (segLen < 1e-6)
+            {
+                continue;
+            }
+            double ux = dx / segLen, uy = dy / segLen;
+            double nx = -uy * hw, ny = ux * hw;
+            double pos = 0;
+            while (pos < segLen)
+            {
+                double step = Math.Min(remaining, segLen - pos);
+                if (on && step > 1e-6)
+                {
+                    double ax = x0 + ux * pos, ay = y0 + uy * pos;
+                    double bx = x0 + ux * (pos + step), by = y0 + uy * (pos + step);
+                    sb.Append(string.Create(CultureInfo.InvariantCulture,
+                        $"M{ax + nx:0.##} {ay + ny:0.##} L{bx + nx:0.##} {by + ny:0.##} L{bx - nx:0.##} {by - ny:0.##} L{ax - nx:0.##} {ay - ny:0.##} Z "));
+                    any = true;
+                }
+                pos += step;
+                remaining -= step;
+                if (remaining <= 1e-9)
+                {
+                    dashIndex = (dashIndex + 1) % dash.Length;
+                    remaining = dash[dashIndex];
+                    on = !on;
+                }
+            }
+        }
+        return any;
     }
 
     private static void AppendSquare(StringBuilder sb, double cx, double cy, double hw)
@@ -980,7 +1068,88 @@ public sealed class HtmlRenderer
         else
         {
             _state.FillPattern = null;
-            _state.FillColor = ColorFromComponents(op) ?? _state.FillColor;
+            _state.FillColor = ColorViaSpace(_state.FillColorSpace, op) ?? _state.FillColor;
+        }
+    }
+
+    private void SetStrokeColorN(Operation op)
+    {
+        if (op.Operands.Count > 0 && op.Operands[^1] is Name)
+        {
+            return; // stroke patterns are not modeled; keep the prior color
+        }
+        _state.StrokeColor = ColorViaSpace(_state.StrokeColorSpace, op) ?? _state.StrokeColor;
+    }
+
+    /// <summary>Resolves the operand of a <c>cs</c>/<c>CS</c> operator to a color space.</summary>
+    private ColorSpace? ResolveColorSpace(Operation op)
+    {
+        if (op.Operands.Count == 0 || op.Operands[0] is not Name name)
+        {
+            return null;
+        }
+        return name.Value switch
+        {
+            "DeviceGray" or "G" => ColorSpace.Gray,
+            "DeviceRGB" or "RGB" => ColorSpace.Rgb,
+            "DeviceCMYK" or "CMYK" => ColorSpace.Cmyk,
+            "Pattern" => null,
+            _ => ColorSpace.Create(name, _xref, _resources),
+        };
+    }
+
+    /// <summary>Sets the current color to the initial value of the selected space.</summary>
+    private void SetDefaultColor(bool stroke)
+    {
+        ColorSpace? cs = stroke ? _state.StrokeColorSpace : _state.FillColorSpace;
+        string color = cs is null ? "rgb(0,0,0)" : RgbString(cs.GetRgb(cs.DefaultComponents()));
+        if (stroke)
+        {
+            _state.StrokeColor = color;
+        }
+        else
+        {
+            _state.FillColor = color;
+            _state.FillPattern = null;
+        }
+    }
+
+    /// <summary>
+    /// Converts the numeric operands of <c>sc</c>/<c>scn</c> through the current
+    /// color space. Falls back to inferring the space from the operand count.
+    /// </summary>
+    private static string? ColorViaSpace(ColorSpace? cs, Operation op)
+    {
+        var nums = op.Operands.Where(o => o is double).Cast<double>().ToArray();
+        if (nums.Length == 0)
+        {
+            return null;
+        }
+        if (cs is not null)
+        {
+            return RgbString(cs.GetRgb(nums));
+        }
+        return ColorFromComponents(op);
+    }
+
+    private static string RgbString((byte R, byte G, byte B) c) => $"rgb({c.R},{c.G},{c.B})";
+
+    private void SetDash(Operation op)
+    {
+        _state.DashArray = null;
+        _state.DashPhase = 0;
+        if (op.Operands.Count >= 1 && op.Operands[0] is List<object?> arr && arr.Count > 0)
+        {
+            var pattern = arr.Where(o => o is double).Cast<double>()
+                .Select(v => v * _state.Ctm.ScaleFactor).ToArray();
+            if (pattern.Length > 0 && pattern.Any(v => v > 0))
+            {
+                _state.DashArray = pattern;
+                if (op.Operands.Count >= 2 && op.Operands[1] is double phase)
+                {
+                    _state.DashPhase = phase * _state.Ctm.ScaleFactor;
+                }
+            }
         }
     }
 

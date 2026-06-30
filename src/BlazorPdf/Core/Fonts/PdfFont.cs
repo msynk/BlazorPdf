@@ -21,6 +21,7 @@ public sealed class PdfFont
     private readonly double _defaultWidth;      // /DW or /MissingWidth, 1000-em
     private readonly ToUnicodeCMap? _toUnicode;
     private readonly Func<int, double>? _standardWidth; // Core-14 fallback metrics
+    private readonly string[]? _encoding;       // simple-font code -> glyph name
 
     /// <summary>The PostScript base font name, when available.</summary>
     public string BaseFont { get; }
@@ -52,7 +53,7 @@ public sealed class PdfFont
     private PdfFont(
         bool isType0, string baseFont, int firstChar, double[] widths,
         Dictionary<int, double> cidWidths, double defaultWidth, ToUnicodeCMap? toUnicode,
-        Func<int, double>? standardWidth = null)
+        Func<int, double>? standardWidth = null, string[]? encoding = null)
     {
         _isType0 = isType0;
         BaseFont = baseFont;
@@ -62,6 +63,7 @@ public sealed class PdfFont
         _defaultWidth = defaultWidth;
         _toUnicode = toUnicode;
         _standardWidth = standardWidth;
+        _encoding = encoding;
     }
 
     /// <summary>Builds a <see cref="PdfFont"/> from a font dictionary.</summary>
@@ -144,6 +146,8 @@ public sealed class PdfFont
         // back to the built-in Core-14 advance metrics.
         Func<int, double>? standardWidth = widths.Count == 0 ? StandardFonts.Resolve(baseFont) : null;
 
+        string[]? encoding = BuildSimpleEncoding(fontDict, baseFont);
+
         return new PdfFont(
             isType0: false,
             baseFont,
@@ -152,7 +156,58 @@ public sealed class PdfFont
             new Dictionary<int, double>(),
             missingWidth,
             toUnicode,
-            standardWidth);
+            standardWidth,
+            encoding);
+    }
+
+    /// <summary>
+    /// Builds the code-to-glyph-name table for a simple font from its
+    /// <c>/Encoding</c> (a base-encoding name and/or a <c>/Differences</c> array).
+    /// </summary>
+    private static string[]? BuildSimpleEncoding(Dict fontDict, string baseFont)
+    {
+        object? enc = fontDict.Get("Encoding");
+
+        // The default base encoding: Standard for the symbolic core fonts,
+        // WinAnsi otherwise (a pragmatic choice that maximizes correct text).
+        string[] baseTable = Encodings.WinAnsi;
+        List<object?>? differences = null;
+
+        switch (enc)
+        {
+            case Name name:
+                baseTable = Encodings.ByName(name.Value) ?? baseTable;
+                break;
+            case Dict dict:
+                if (dict.Get("BaseEncoding") is Name baseName)
+                {
+                    baseTable = Encodings.ByName(baseName.Value) ?? baseTable;
+                }
+                differences = dict.Get("Differences") as List<object?>;
+                break;
+            case null:
+                // No /Encoding: nothing to override; keep the default table.
+                return (string[])baseTable.Clone();
+        }
+
+        var table = (string[])baseTable.Clone();
+        if (differences is not null)
+        {
+            int code = 0;
+            foreach (var item in differences)
+            {
+                if (item is double d)
+                {
+                    code = (int)d;
+                }
+                else if (item is Name glyphName && code is >= 0 and < 256)
+                {
+                    table[code] = glyphName.Value;
+                    code++;
+                }
+            }
+        }
+        return table;
     }
 
     private static PdfFont CreateType0(Dict fontDict, IXRef xref, string baseFont, ToUnicodeCMap? toUnicode)
@@ -288,6 +343,15 @@ public sealed class PdfFont
         {
             // Without a ToUnicode map a CID cannot be reliably mapped; emit nothing.
             return string.Empty;
+        }
+        // Resolve via the font's encoding (base encoding + /Differences).
+        if (_encoding is not null && code is >= 0 and < 256 && _encoding[code].Length > 0)
+        {
+            string viaName = GlyphList.ToUnicode(_encoding[code]);
+            if (!string.IsNullOrEmpty(viaName))
+            {
+                return viaName;
+            }
         }
         return WinAnsiEncoding.CodeToUnicode(code);
     }

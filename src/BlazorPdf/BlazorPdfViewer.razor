@@ -1,13 +1,17 @@
 @namespace BlazorPdf
 @using System.Globalization
+@using BlazorPdf.Core
 
 <div class="blazorpdf-viewer" style="height:@Height" @ref="_viewerRef">
     @if (ShowToolbar)
     {
         <div class="blazorpdf-toolbar">
             <div class="blazorpdf-group">
-                <button class="blazorpdf-btn" title="Pages" @onclick="ToggleThumbnails" disabled="@(_pages.Count == 0)">
+                <button class="blazorpdf-btn @(_showThumbnails ? "active" : "")" title="Pages" @onclick="ToggleThumbnails" disabled="@(_pages.Count == 0)">
                     <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>
+                </button>
+                <button class="blazorpdf-btn @(_showOutline ? "active" : "")" title="Bookmarks" @onclick="ToggleOutline" disabled="@(!HasOutline)">
+                    <svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
                 </button>
             </div>
 
@@ -69,6 +73,9 @@
                 <button class="blazorpdf-btn" title="Download" @onclick="DownloadAsync" disabled="@(_source?.Bytes is null)">
                     <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
                 </button>
+                <button class="blazorpdf-btn" title="Print" @onclick="PrintAsync" disabled="@(_pages.Count == 0)">
+                    <svg viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4v-7h16v7h-2M8 14h8v7H8z"/></svg>
+                </button>
                 <button class="blazorpdf-btn" title="Fullscreen" @onclick="ToggleFullscreen">
                     <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
                 </button>
@@ -77,6 +84,12 @@
     }
 
     <div class="blazorpdf-body">
+        @if (_showOutline && HasOutline)
+        {
+            <div class="blazorpdf-outline">
+                @RenderOutline(_outline)
+            </div>
+        }
         @if (_showThumbnails && _pages.Count > 0)
         {
             <div class="blazorpdf-thumbs">
@@ -123,4 +136,19 @@
             await SetZoomMode(mode);
         }
     }
+
+    private RenderFragment RenderOutline(IReadOnlyList<OutlineItem> items) =>
+        @<ul class="blazorpdf-outline-list">
+            @foreach (var item in items)
+            {
+                <li>
+                    <div class="blazorpdf-outline-item @(item.PageNumber is null ? "disabled" : "")"
+                         title="@item.Title" @onclick="@(() => OnOutlineClick(item))">@item.Title</div>
+                    @if (item.Children.Count > 0)
+                    {
+                        @RenderOutline(item.Children)
+                    }
+                </li>
+            }
+        </ul>;
 }

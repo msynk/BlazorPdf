@@ -125,9 +125,11 @@ public sealed class Parser
                 }
             }
             // Not a ref/obj: restore lookahead and return the first number.
+            // Return the original double (not the int `num`) so that downstream
+            // `is double` checks continue to work for integer-valued operands.
             _buf1 = _buf2;
             _buf2 = third;
-            return num;
+            return n1;
         }
 
         // Simple token: number, name, string, bool, null, or a bare command.

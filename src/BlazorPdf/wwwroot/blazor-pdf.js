@@ -97,6 +97,64 @@ export function toggleFullscreen(element) {
     }
 }
 
+// Prints the rendered pages at their true physical size by cloning each page
+// into a hidden iframe (one sheet per page) and invoking the browser dialog.
+export function printDocument(container) {
+    if (!container) {
+        return;
+    }
+    const pages = container.querySelectorAll("[data-page] .bp-html-page");
+    if (!pages.length) {
+        return;
+    }
+
+    const frame = document.createElement("iframe");
+    frame.setAttribute("aria-hidden", "true");
+    frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+    document.body.appendChild(frame);
+
+    const doc = frame.contentDocument || frame.contentWindow.document;
+    doc.open();
+    doc.write(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" +
+        "@page{margin:0}html,body{margin:0;padding:0;background:#fff}" +
+        ".bpf-sheet{position:relative;overflow:hidden;page-break-after:always;break-after:page}" +
+        ".bpf-sheet:last-child{page-break-after:auto;break-after:auto}" +
+        "</style></head><body></body></html>");
+    doc.close();
+
+    const ptToPx = 96 / 72; // PDF points to CSS pixels for physical-size output
+    pages.forEach((inner) => {
+        const w = parseFloat(inner.style.width) || 0;
+        const h = parseFloat(inner.style.height) || 0;
+        const sheet = doc.createElement("div");
+        sheet.className = "bpf-sheet";
+        sheet.style.width = (w * ptToPx).toFixed(2) + "px";
+        sheet.style.height = (h * ptToPx).toFixed(2) + "px";
+        sheet.innerHTML = inner.outerHTML;
+        const clone = sheet.firstElementChild;
+        if (clone) {
+            clone.style.transform = "scale(" + ptToPx + ")";
+            clone.style.transformOrigin = "top left";
+        }
+        doc.body.appendChild(sheet);
+    });
+
+    const cleanup = () => setTimeout(() => frame.remove(), 1000);
+    if (frame.contentWindow) {
+        frame.contentWindow.addEventListener("afterprint", cleanup, { once: true });
+    }
+    // Allow a tick for fonts/images to lay out before printing.
+    setTimeout(() => {
+        try {
+            frame.contentWindow.focus();
+            frame.contentWindow.print();
+        } catch {
+            frame.remove();
+        }
+    }, 300);
+}
+
 // ----- Text search (CSS Custom Highlight API) -----
 
 function ensureSearchStyles() {

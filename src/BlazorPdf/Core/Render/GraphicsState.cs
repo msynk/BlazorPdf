@@ -16,11 +16,17 @@ public sealed class GraphicsState
 
     public string FillColor { get; set; } = "rgb(0,0,0)";
     public string StrokeColor { get; set; } = "rgb(0,0,0)";
+    public ColorSpace? FillColorSpace { get; set; }   // current fill space (cs)
+    public ColorSpace? StrokeColorSpace { get; set; } // current stroke space (CS)
     public string? FillPattern { get; set; }   // /Pattern resource name for scn
     public string BlendMode { get; set; } = ""; // CSS mix-blend-mode, "" = normal
     public double FillAlpha { get; set; } = 1.0;
     public double StrokeAlpha { get; set; } = 1.0;
     public double LineWidth { get; set; } = 1.0;
+    public double[]? DashArray { get; set; }    // device dash pattern (d operator)
+    public double DashPhase { get; set; }
+    public int LineCap { get; set; }            // 0 butt, 1 round, 2 square
+    public int LineJoin { get; set; }           // 0 miter, 1 round, 2 bevel
 
     // Text state.
     public PdfFont? Font { get; set; }
@@ -38,11 +44,17 @@ public sealed class GraphicsState
         Ctm = Ctm,
         FillColor = FillColor,
         StrokeColor = StrokeColor,
+        FillColorSpace = FillColorSpace,
+        StrokeColorSpace = StrokeColorSpace,
         FillPattern = FillPattern,
         BlendMode = BlendMode,
         FillAlpha = FillAlpha,
         StrokeAlpha = StrokeAlpha,
         LineWidth = LineWidth,
+        DashArray = DashArray,
+        DashPhase = DashPhase,
+        LineCap = LineCap,
+        LineJoin = LineJoin,
         Font = Font,
         FontResourceName = FontResourceName,
         FontSize = FontSize,

@@ -197,6 +197,52 @@
     scroll-behavior: smooth;
 }
 
+/* Bookmarks (document outline) sidebar */
+.blazorpdf-outline {
+    width: 230px;
+    flex-shrink: 0;
+    overflow: auto;
+    background: #3a3e41;
+    padding: 0.5rem 0.25rem 0.5rem 0.5rem;
+    border-right: 1px solid #1f2123;
+    color: #e6e6e6;
+    font-size: 0.85rem;
+}
+
+.blazorpdf-outline-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 0.75rem;
+}
+
+.blazorpdf-outline > .blazorpdf-outline-list {
+    padding-left: 0;
+}
+
+.blazorpdf-outline-item {
+    cursor: pointer;
+    padding: 0.2rem 0.35rem;
+    border-radius: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.blazorpdf-outline-item:hover {
+    background: #4c8bf5;
+    color: #fff;
+}
+
+.blazorpdf-outline-item.disabled {
+    cursor: default;
+    color: #9aa0a6;
+}
+
+.blazorpdf-outline-item.disabled:hover {
+    background: transparent;
+    color: #9aa0a6;
+}
+
 .blazorpdf-empty {
     display: grid;
     place-items: center;
