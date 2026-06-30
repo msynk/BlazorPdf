@@ -2,6 +2,9 @@
   <Folder Name="/src/">
     <Project Path="BlazorPdf/BlazorPdf.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="BlazorPdf.Tests/BlazorPdf.Tests.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="BlazorPdf.Demo/BlazorPdf.Demo.csproj" />
   </Folder>
