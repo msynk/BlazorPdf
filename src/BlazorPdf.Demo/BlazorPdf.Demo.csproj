@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\BlazorPdf\BlazorPdf.csproj" />
+    <ProjectReference Include="..\BlazorPdf\BlazorPdf.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
