@@ -1,6 +1,7 @@
 using BlazorPdf.Core;
 using BlazorPdf.Core.Render;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
 
 namespace BlazorPdf;
@@ -8,8 +9,8 @@ namespace BlazorPdf;
 /// <summary>
 /// A pure-C# PDF viewer component with a full toolbar (page navigation, zoom,
 /// fit modes, rotation, download, fullscreen and an optional thumbnail sidebar).
-/// The rendering pipeline is a clean-room port of pdf.js that emits plain SVG
-/// DOM per page (vector graphics as &lt;path&gt;, selectable text as &lt;text&gt;).
+/// The rendering pipeline emits plain HTML DOM per page (vector graphics as
+/// &lt;div&gt; clip-paths, selectable text as &lt;span&gt;, rasters as &lt;img&gt;).
 /// </summary>
 public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 {
@@ -26,6 +27,11 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private PdfZoomMode _zoomMode = PdfZoomMode.FitWidth;
     private int _rotation;
     private bool _showThumbnails;
+
+    private bool _showSearch;
+    private string _searchQuery = "";
+    private int _searchTotal;
+    private int _searchIndex = -1;
 
     private IJSObjectReference? _module;
     private DotNetObjectReference<BlazorPdfViewer>? _dotNetRef;
@@ -85,6 +91,10 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             _spyPending = false;
             await _module.InvokeVoidAsync("registerScrollSpy", _containerRef, _dotNetRef);
             await ApplyFitAsync();
+            if (!string.IsNullOrEmpty(_searchQuery))
+            {
+                await RunSearchAsync();
+            }
         }
     }
 
@@ -96,6 +106,8 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         _pageWidths.Clear();
         _pageHeights.Clear();
         _document = null;
+        _searchTotal = 0;
+        _searchIndex = -1;
 
         if (_source is null)
         {
@@ -137,8 +149,8 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         bool swap = _rotation % 180 == 90;
         foreach (var page in _document.Pages)
         {
-            string svg = new SvgRenderer(page, _document.XRef, _rotation).Render();
-            _pages.Add(new MarkupString(svg));
+            string html = new Core.Render.HtmlRenderer(page, _document.XRef, _rotation).Render();
+            _pages.Add(new MarkupString(html));
             _pageWidths.Add(swap ? page.Height : page.Width);
             _pageHeights.Add(swap ? page.Width : page.Height);
         }
@@ -273,10 +285,106 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private void ToggleThumbnails() => _showThumbnails = !_showThumbnails;
 
+    // ----- Search -----
+
+    private string SearchLabel => _searchTotal switch
+    {
+        < 0 => "n/a",
+        0 => string.IsNullOrEmpty(_searchQuery) ? "" : "0/0",
+        _ => $"{_searchIndex + 1}/{_searchTotal}",
+    };
+
+    private async Task ToggleSearch()
+    {
+        _showSearch = !_showSearch;
+        if (!_showSearch)
+        {
+            _searchQuery = "";
+            await ClearSearchAsync();
+        }
+    }
+
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        _searchQuery = e.Value?.ToString() ?? "";
+        await RunSearchAsync();
+    }
+
+    private async Task OnSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            if (_searchTotal > 0)
+            {
+                await (e.ShiftKey ? SearchPrev() : SearchNext());
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            await ToggleSearch();
+        }
+    }
+
+    private async Task RunSearchAsync()
+    {
+        if (_module is null)
+        {
+            return;
+        }
+        if (string.IsNullOrEmpty(_searchQuery))
+        {
+            await ClearSearchAsync();
+            return;
+        }
+
+        _searchTotal = await _module.InvokeAsync<int>("searchAll", _containerRef, _searchQuery);
+        _searchIndex = _searchTotal > 0 ? 0 : -1;
+        if (_searchTotal > 0)
+        {
+            await _module.InvokeVoidAsync("gotoMatch", _containerRef, _searchIndex);
+        }
+    }
+
+    private Task SearchNext() => GotoMatch(_searchIndex + 1);
+
+    private Task SearchPrev() => GotoMatch(_searchIndex - 1);
+
+    private async Task GotoMatch(int index)
+    {
+        if (_module is null || _searchTotal <= 0)
+        {
+            return;
+        }
+        _searchIndex = ((index % _searchTotal) + _searchTotal) % _searchTotal;
+        await _module.InvokeVoidAsync("gotoMatch", _containerRef, _searchIndex);
+    }
+
+    private async Task ClearSearchAsync()
+    {
+        _searchTotal = 0;
+        _searchIndex = -1;
+        if (_module is not null)
+        {
+            await _module.InvokeVoidAsync("clearSearch", _containerRef);
+        }
+    }
+
     private string PageStyle(int index)
     {
-        double w = (index < _pageWidths.Count ? _pageWidths[index] : 612) * _zoom;
-        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"width:{w:0.#}px");
+        double pw = index < _pageWidths.Count ? _pageWidths[index] : 612;
+        double ph = index < _pageHeights.Count ? _pageHeights[index] : 792;
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"width:{pw * _zoom:0.#}px;height:{ph * _zoom:0.#}px;--bp-scale:{_zoom:0.####}");
+    }
+
+    private string ThumbStyle(int index)
+    {
+        const double target = 130.0; // thumbnail content width in px
+        double pw = index < _pageWidths.Count ? _pageWidths[index] : 612;
+        double ph = index < _pageHeights.Count ? _pageHeights[index] : 792;
+        double scale = pw > 0 ? target / pw : 0.2;
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"position:relative;width:{pw * scale:0.#}px;height:{ph * scale:0.#}px;overflow:hidden;--bp-scale:{scale:0.####}");
     }
 
     public async ValueTask DisposeAsync()

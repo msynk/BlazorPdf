@@ -66,6 +66,7 @@ export function disposeScrollSpy(container) {
     if (!container) {
         return;
     }
+    clearSearch(container);
     if (container.__bpfObserver) {
         container.__bpfObserver.disconnect();
         container.__bpfObserver = null;
@@ -93,5 +94,115 @@ export function toggleFullscreen(element) {
         document.exitFullscreen();
     } else if (element.requestFullscreen) {
         element.requestFullscreen();
+    }
+}
+
+// ----- Text search (CSS Custom Highlight API) -----
+
+function ensureSearchStyles() {
+    if (document.getElementById("bpf-search-style")) {
+        return;
+    }
+    const style = document.createElement("style");
+    style.id = "bpf-search-style";
+    style.textContent =
+        "::highlight(bpf-search){background:#ffe066;color:#000}" +
+        "::highlight(bpf-search-current){background:#ff8f00;color:#000}";
+    document.head.appendChild(style);
+}
+
+function searchSupported() {
+    return typeof Highlight !== "undefined" && typeof CSS !== "undefined" && !!CSS.highlights;
+}
+
+function locate(nodes, pos) {
+    for (const entry of nodes) {
+        if (pos >= entry.start && pos <= entry.start + entry.node.nodeValue.length) {
+            return { node: entry.node, offset: pos - entry.start };
+        }
+    }
+    return null;
+}
+
+function buildRange(nodes, start, end) {
+    const a = locate(nodes, start);
+    const b = locate(nodes, end);
+    if (!a || !b) {
+        return null;
+    }
+    const range = document.createRange();
+    try {
+        range.setStart(a.node, a.offset);
+        range.setEnd(b.node, b.offset);
+    } catch {
+        return null;
+    }
+    return range;
+}
+
+// Finds every case-insensitive occurrence of `query` across all pages and
+// registers a highlight. Returns the match count, or -1 if unsupported.
+export function searchAll(container, query) {
+    clearSearch(container);
+    if (!container || !query) {
+        return 0;
+    }
+    if (!searchSupported()) {
+        return -1;
+    }
+    ensureSearchStyles();
+
+    const needle = query.toLowerCase();
+    const ranges = [];
+
+    container.querySelectorAll("[data-page]").forEach((page) => {
+        const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
+        const nodes = [];
+        let text = "";
+        let node;
+        while ((node = walker.nextNode())) {
+            nodes.push({ node, start: text.length });
+            text += node.nodeValue;
+        }
+        const haystack = text.toLowerCase();
+        let idx = haystack.indexOf(needle);
+        while (idx !== -1) {
+            const range = buildRange(nodes, idx, idx + needle.length);
+            if (range) {
+                ranges.push(range);
+            }
+            idx = haystack.indexOf(needle, idx + needle.length);
+        }
+    });
+
+    container.__bpfRanges = ranges;
+    if (ranges.length) {
+        CSS.highlights.set("bpf-search", new Highlight(...ranges));
+    }
+    return ranges.length;
+}
+
+// Marks the match at `index` as current and scrolls it into view.
+export function gotoMatch(container, index) {
+    const ranges = container && container.__bpfRanges;
+    if (!ranges || !ranges.length || !searchSupported()) {
+        return;
+    }
+    const i = ((index % ranges.length) + ranges.length) % ranges.length;
+    const range = ranges[i];
+    CSS.highlights.set("bpf-search-current", new Highlight(range));
+    const el = range.startContainer.parentElement;
+    if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+}
+
+export function clearSearch(container) {
+    if (searchSupported()) {
+        CSS.highlights.delete("bpf-search");
+        CSS.highlights.delete("bpf-search-current");
+    }
+    if (container) {
+        container.__bpfRanges = null;
     }
 }

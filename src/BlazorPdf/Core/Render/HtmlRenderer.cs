@@ -1,8 +1,9 @@
-// Clean-room C# port inspired by the pdf.js SVG backend (`src/display/svg.js`)
-// and content evaluator (`src/core/evaluator.js`). It walks a page's operator
-// list and emits plain SVG DOM elements: <path> for vector graphics, <text>
-// for selectable text, <image> for rasters, gradients for shadings, and
-// <clipPath> groups for clipping. See NOTICE.
+// Clean-room C# renderer inspired by the pdf.js display layer
+// (`src/display/canvas.js` for the operator walk and `src/core/evaluator.js`
+// for content evaluation). Unlike the SVG backend, this emits plain HTML DOM:
+// <div> with CSS `clip-path: path()` for vector fills and clips, filled <div>
+// outlines for strokes, <img> for rasters, <span> for selectable text and CSS
+// gradients for shadings. See NOTICE.
 
 using System.Globalization;
 using System.Text;
@@ -13,13 +14,16 @@ using BlazorPdf.Core.Geometry;
 namespace BlazorPdf.Core.Render;
 
 /// <summary>
-/// Renders a <see cref="PdfPage"/> to an SVG document string. All output is
-/// native SVG DOM so text remains selectable and graphics stay resolution
-/// independent.
+/// Renders a <see cref="PdfPage"/> to an HTML fragment. The page is a single
+/// positioned <c>&lt;div&gt;</c> sized in PDF points; all content is laid out
+/// in device pixels and scaled to fit via the <c>--bp-scale</c> CSS variable so
+/// text stays selectable and graphics stay resolution independent.
 /// </summary>
-public sealed class SvgRenderer
+public sealed class HtmlRenderer
 {
     private const int MaxFormDepth = 12;
+    private const int CurveSegments = 12;
+    private const double AscentFactor = 0.8; // approximate baseline offset
 
     private readonly PdfPage _page;
     private readonly IXRef _xref;
@@ -30,29 +34,31 @@ public sealed class SvgRenderer
     private readonly Stack<int> _groupDepthStack = new();
     private Dict? _resources;
     private Matrix _baseMatrix = Matrix.Identity;
+    private double _viewW;
+    private double _viewH;
 
-    // Current path under construction, in device coordinates.
+    // Current path under construction (device space). The SVG-syntax string is
+    // reused for CSS clip-path; the flattened subpaths drive stroke outlining.
     private readonly StringBuilder _pathData = new();
+    private readonly List<List<(double X, double Y)>> _subpaths = new();
+    private List<(double X, double Y)>? _currentSub;
     private double _curX, _curY;
     private double _startX, _startY;
     private bool? _pendingClipEvenOdd;
 
-    // Text object matrices.
     private Matrix _textMatrix = Matrix.Identity;
     private Matrix _textLineMatrix = Matrix.Identity;
 
-    private readonly StringBuilder _defs = new();
     private readonly StringBuilder _fontFaces = new();
     private readonly HashSet<string> _emittedFamilies = new();
     private readonly Dictionary<string, string?> _patternCache = new();
-    private StringBuilder _svgBody = new();
+    private StringBuilder _html = new();
     private int _openGroups;
-    private int _idCounter;
     private int _formDepth;
 
     private readonly int _rotationOffset;
 
-    public SvgRenderer(PdfPage page, IXRef xref, int rotationOffset = 0)
+    public HtmlRenderer(PdfPage page, IXRef xref, int rotationOffset = 0)
     {
         _page = page;
         _xref = xref;
@@ -60,7 +66,7 @@ public sealed class SvgRenderer
         _rotationOffset = ((rotationOffset % 360) + 360) % 360;
     }
 
-    /// <summary>Renders the page and returns a complete <c>&lt;svg&gt;</c> element.</summary>
+    /// <summary>Renders the page and returns a single positioned <c>&lt;div&gt;</c>.</summary>
     public string Render()
     {
         double[] mb = _page.MediaBox;
@@ -75,6 +81,8 @@ public sealed class SvgRenderer
             ((_page.Rotate + _rotationOffset) % 360 + 360) % 360, x0, y0, x1, y1, w, h);
         _state.Ctm = baseMatrix;
         _baseMatrix = baseMatrix;
+        _viewW = viewW;
+        _viewH = viewH;
 
         List<Operation> ops;
         try
@@ -84,15 +92,14 @@ public sealed class SvgRenderer
         catch (Exception ex)
         {
             ops = new List<Operation>();
-            _svgBody.Append($"<!-- content parse error: {Escape(ex.Message)} -->");
+            _html.Append($"<!-- content parse error: {Escape(ex.Message)} -->");
         }
 
         RunOps(ops);
 
-        // Close any clip groups left open by unbalanced q/Q.
         while (_openGroups > 0)
         {
-            _svgBody.Append("</g>");
+            _html.Append("</div>");
             _openGroups--;
         }
 
@@ -100,20 +107,13 @@ public sealed class SvgRenderer
 
         var sb = new StringBuilder();
         sb.Append(string.Create(CultureInfo.InvariantCulture,
-            $"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {viewW:0.##} {viewH:0.##}\" width=\"{viewW:0.##}\" height=\"{viewH:0.##}\">"));
-        sb.Append("<rect x=\"0\" y=\"0\" width=\"100%\" height=\"100%\" fill=\"white\"/>");
-        if (_defs.Length > 0 || _fontFaces.Length > 0)
+            $"<div class=\"bp-html-page\" style=\"position:absolute;left:0;top:0;width:{viewW:0.##}px;height:{viewH:0.##}px;overflow:hidden;background:#fff;color:#000;transform:scale(var(--bp-scale,1));transform-origin:top left\">"));
+        if (_fontFaces.Length > 0)
         {
-            sb.Append("<defs>");
-            if (_fontFaces.Length > 0)
-            {
-                sb.Append("<style type=\"text/css\">").Append(_fontFaces).Append("</style>");
-            }
-            sb.Append(_defs);
-            sb.Append("</defs>");
+            sb.Append("<style>").Append(_fontFaces).Append("</style>");
         }
-        sb.Append(_svgBody);
-        sb.Append("</svg>");
+        sb.Append(_html);
+        sb.Append("</div>");
         return sb.ToString();
     }
 
@@ -153,7 +153,7 @@ public sealed class SvgRenderer
                     int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
                     while (_openGroups > target)
                     {
-                        _svgBody.Append("</g>");
+                        _html.Append("</div>");
                         _openGroups--;
                     }
                 }
@@ -242,11 +242,18 @@ public sealed class SvgRenderer
 
     // ----- Path building (coordinates transformed to device space) -----
 
+    private void StartSub(double dx, double dy)
+    {
+        _currentSub = new List<(double X, double Y)> { (dx, dy) };
+        _subpaths.Add(_currentSub);
+    }
+
     private void MoveTo(double x, double y)
     {
         _curX = _startX = x;
         _curY = _startY = y;
         var (dx, dy) = _state.Ctm.Apply(x, y);
+        StartSub(dx, dy);
         _pathData.Append(string.Create(CultureInfo.InvariantCulture, $"M{dx:0.##} {dy:0.##} "));
     }
 
@@ -255,6 +262,14 @@ public sealed class SvgRenderer
         _curX = x;
         _curY = y;
         var (dx, dy) = _state.Ctm.Apply(x, y);
+        if (_currentSub is null)
+        {
+            StartSub(dx, dy);
+        }
+        else
+        {
+            _currentSub.Add((dx, dy));
+        }
         _pathData.Append(string.Create(CultureInfo.InvariantCulture, $"L{dx:0.##} {dy:0.##} "));
     }
 
@@ -263,6 +278,25 @@ public sealed class SvgRenderer
         var (a, b) = _state.Ctm.Apply(x1, y1);
         var (c, d) = _state.Ctm.Apply(x2, y2);
         var (e, f) = _state.Ctm.Apply(x3, y3);
+
+        (double X, double Y) p0 = _currentSub is { Count: > 0 }
+            ? _currentSub[^1]
+            : _state.Ctm.Apply(_curX, _curY);
+        if (_currentSub is null)
+        {
+            StartSub(p0.X, p0.Y);
+        }
+
+        // Flatten the cubic Bezier so strokes can be outlined.
+        for (int i = 1; i <= CurveSegments; i++)
+        {
+            double t = (double)i / CurveSegments;
+            double mt = 1 - t;
+            double bx = mt * mt * mt * p0.X + 3 * mt * mt * t * a + 3 * mt * t * t * c + t * t * t * e;
+            double by = mt * mt * mt * p0.Y + 3 * mt * mt * t * b + 3 * mt * t * t * d + t * t * t * f;
+            _currentSub!.Add((bx, by));
+        }
+
         _curX = x3;
         _curY = y3;
         _pathData.Append(string.Create(CultureInfo.InvariantCulture,
@@ -282,7 +316,18 @@ public sealed class SvgRenderer
     {
         _curX = _startX;
         _curY = _startY;
+        if (_currentSub is { Count: > 0 })
+        {
+            _currentSub.Add(_currentSub[0]); // close the polyline for stroking
+        }
         _pathData.Append("Z ");
+    }
+
+    private void ResetPath()
+    {
+        _pathData.Clear();
+        _subpaths.Clear();
+        _currentSub = null;
     }
 
     private void PaintPath(bool stroke, bool fill, bool evenOdd)
@@ -295,47 +340,104 @@ public sealed class SvgRenderer
 
         string data = _pathData.ToString().Trim();
 
-        var attrs = new StringBuilder();
         if (fill)
         {
             string fillPaint = _state.FillPattern is not null
                 ? ResolveFillPaint(_state.FillPattern) ?? _state.FillColor
                 : _state.FillColor;
-            attrs.Append($" fill=\"{fillPaint}\"");
+            EmitFill(data, evenOdd, fillPaint, _state.FillAlpha);
         }
-        else
-        {
-            attrs.Append(" fill=\"none\"");
-        }
-        if (fill && evenOdd)
-        {
-            attrs.Append(" fill-rule=\"evenodd\"");
-        }
-        if (fill && _state.FillAlpha < 1)
-        {
-            attrs.Append(string.Create(CultureInfo.InvariantCulture, $" fill-opacity=\"{_state.FillAlpha:0.###}\""));
-        }
+
         if (stroke)
         {
-            double deviceWidth = Math.Max(0.1, _state.LineWidth * _state.Ctm.ScaleFactor);
-            attrs.Append($" stroke=\"{_state.StrokeColor}\"");
-            attrs.Append(string.Create(CultureInfo.InvariantCulture, $" stroke-width=\"{deviceWidth:0.###}\""));
-            if (_state.StrokeAlpha < 1)
+            double deviceWidth = Math.Max(0.5, _state.LineWidth * _state.Ctm.ScaleFactor);
+            string? outline = BuildStrokeOutline(deviceWidth);
+            if (outline is not null)
             {
-                attrs.Append(string.Create(CultureInfo.InvariantCulture, $" stroke-opacity=\"{_state.StrokeAlpha:0.###}\""));
+                EmitFill(outline, false, _state.StrokeColor, _state.StrokeAlpha);
             }
         }
 
-        _svgBody.Append($"<path d=\"{data}\"{attrs}{StyleAttr()}/>");
-
         ApplyPendingClip(data);
-        _pathData.Clear();
+        ResetPath();
+    }
+
+    private void EmitFill(string pathData, bool evenOdd, string paint, double alpha)
+    {
+        _html.Append("<div style=\"position:absolute;inset:0;background:");
+        _html.Append(paint);
+        _html.Append(";clip-path:path(");
+        if (evenOdd)
+        {
+            _html.Append("evenodd,");
+        }
+        _html.Append('\'').Append(pathData).Append("')");
+        if (alpha < 1)
+        {
+            _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{alpha:0.###}"));
+        }
+        if (_state.BlendMode.Length > 0)
+        {
+            _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+        }
+        _html.Append("\"></div>");
+    }
+
+    /// <summary>
+    /// Builds a fill path that approximates stroking <see cref="_subpaths"/> at
+    /// the given device width: a quad per segment plus a small square at each
+    /// vertex to cover joins and caps. Filled with nonzero winding.
+    /// </summary>
+    private string? BuildStrokeOutline(double width)
+    {
+        double hw = Math.Max(width / 2.0, 0.35);
+        var sb = new StringBuilder();
+        bool any = false;
+
+        foreach (var sub in _subpaths)
+        {
+            if (sub.Count == 1)
+            {
+                // Lone moveto with a dot cap (rare).
+                AppendSquare(sb, sub[0].X, sub[0].Y, hw);
+                any = true;
+                continue;
+            }
+            for (int i = 0; i + 1 < sub.Count; i++)
+            {
+                var (x0, y0) = sub[i];
+                var (x1, y1) = sub[i + 1];
+                double dx = x1 - x0, dy = y1 - y0;
+                double len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 1e-6)
+                {
+                    continue;
+                }
+                double nx = -dy / len * hw, ny = dx / len * hw;
+                sb.Append(string.Create(CultureInfo.InvariantCulture,
+                    $"M{x0 + nx:0.##} {y0 + ny:0.##} L{x1 + nx:0.##} {y1 + ny:0.##} L{x1 - nx:0.##} {y1 - ny:0.##} L{x0 - nx:0.##} {y0 - ny:0.##} Z "));
+                any = true;
+            }
+            // Cover joins/caps with squares at each vertex.
+            foreach (var (vx, vy) in sub)
+            {
+                AppendSquare(sb, vx, vy, hw);
+            }
+        }
+
+        return any ? sb.ToString().Trim() : null;
+    }
+
+    private static void AppendSquare(StringBuilder sb, double cx, double cy, double hw)
+    {
+        sb.Append(string.Create(CultureInfo.InvariantCulture,
+            $"M{cx - hw:0.##} {cy - hw:0.##} L{cx + hw:0.##} {cy - hw:0.##} L{cx + hw:0.##} {cy + hw:0.##} L{cx - hw:0.##} {cy + hw:0.##} Z "));
     }
 
     private void EndPathNoPaint()
     {
         ApplyPendingClip(_pathData.Length > 0 ? _pathData.ToString().Trim() : null);
-        _pathData.Clear();
+        ResetPath();
     }
 
     private void ApplyPendingClip(string? data = null)
@@ -353,15 +455,12 @@ public sealed class SvgRenderer
             return;
         }
 
-        string id = $"clip{_idCounter++}";
-        _defs.Append($"<clipPath id=\"{id}\" clipPathUnits=\"userSpaceOnUse\"><path d=\"{data}\"");
+        _html.Append("<div style=\"position:absolute;inset:0;clip-path:path(");
         if (evenOdd)
         {
-            _defs.Append(" clip-rule=\"evenodd\"");
+            _html.Append("evenodd,");
         }
-        _defs.Append("/></clipPath>");
-
-        _svgBody.Append($"<g clip-path=\"url(#{id})\">");
+        _html.Append('\'').Append(data).Append("')\">");
         _openGroups++;
     }
 
@@ -384,14 +483,15 @@ public sealed class SvgRenderer
             return;
         }
 
-        string id = $"grad{_idCounter++}";
-        string? fill = ShadingBuilder.Build(shading, _xref, _resources, _state.Ctm, id, _defs);
-        if (fill is null)
+        string? background = CssShadingBuilder.Build(shading, _xref, _resources, _state.Ctm, _viewW, _viewH);
+        if (background is null)
         {
             return;
         }
         // Fill the current clip region (or the whole page when unclipped).
-        _svgBody.Append($"<rect x=\"-100000\" y=\"-100000\" width=\"200000\" height=\"200000\" fill=\"{fill}\"/>");
+        _html.Append("<div style=\"position:absolute;inset:0;background:");
+        _html.Append(background);
+        _html.Append("\"></div>");
     }
 
     // ----- XObjects -----
@@ -427,7 +527,7 @@ public sealed class SvgRenderer
         {
             return;
         }
-        EmitImage(uri);
+        EmitImage(uri, PixelSize(stream.Dict!, "Width", "W"), PixelSize(stream.Dict!, "Height", "H"));
     }
 
     private void DrawInlineImage(Operation op)
@@ -441,26 +541,44 @@ public sealed class SvgRenderer
         string? uri = PdfImage.BuildDataUri(stream, _xref, _resources, fill);
         if (uri is not null)
         {
-            EmitImage(uri);
+            EmitImage(uri, PixelSize(dict, "Width", "W"), PixelSize(dict, "Height", "H"));
         }
     }
 
-    private void EmitImage(string uri)
+    private void EmitImage(string uri, int pixelW, int pixelH)
     {
-        // The image occupies the unit square; flip Y so row 0 is at the top.
-        Matrix m = Matrix.Concat(_state.Ctm, new Matrix(1, 0, 0, -1, 0, 1));
-        _svgBody.Append("<image x=\"0\" y=\"0\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" transform=\"");
-        _svgBody.Append(m.ToSvg());
+        if (pixelW <= 0)
+        {
+            pixelW = 1;
+        }
+        if (pixelH <= 0)
+        {
+            pixelH = 1;
+        }
+
+        // The image occupies the unit square; flip Y so row 0 is at the top. The
+        // <img> element is sized to its native pixels so the browser samples at
+        // full resolution before the matrix scales it into place.
+        Matrix unit = Matrix.Concat(_state.Ctm, new Matrix(1, 0, 0, -1, 0, 1));
+        Matrix m = Matrix.Concat(unit, new Matrix(1.0 / pixelW, 0, 0, 1.0 / pixelH, 0, 0));
+
+        _html.Append("<img src=\"");
+        _html.Append(uri);
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $"\" style=\"position:absolute;left:0;top:0;width:{pixelW}px;height:{pixelH}px;transform:{m.ToSvg()};transform-origin:0 0"));
         if (_state.FillAlpha < 1)
         {
-            _svgBody.Append(string.Create(CultureInfo.InvariantCulture, $"\" opacity=\"{_state.FillAlpha:0.###}"));
+            _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
         }
-        _svgBody.Append("\" href=\"");
-        _svgBody.Append(uri);
-        _svgBody.Append('"');
-        _svgBody.Append(StyleAttr());
-        _svgBody.Append("/>");
+        if (_state.BlendMode.Length > 0)
+        {
+            _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+        }
+        _html.Append("\"/>");
     }
+
+    private static int PixelSize(Dict dict, string key1, string key2)
+        => dict.Get(key1, key2) is double d ? (int)d : 0;
 
     private void DrawForm(PdfStream stream)
     {
@@ -503,7 +621,7 @@ public sealed class SvgRenderer
             int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
             while (_openGroups > target)
             {
-                _svgBody.Append("</g>");
+                _html.Append("</div>");
                 _openGroups--;
             }
         }
@@ -569,7 +687,7 @@ public sealed class SvgRenderer
 
         while (_openGroups > 0)
         {
-            _svgBody.Append("</g>");
+            _html.Append("</div>");
             _openGroups--;
         }
     }
@@ -627,10 +745,10 @@ public sealed class SvgRenderer
         }
 
         double[] r = ToRect(rectArr);
-        _svgBody.Append($"<a href=\"{Escape(uri)}\" target=\"_blank\"><rect transform=\"");
-        _svgBody.Append(_baseMatrix.ToSvg());
-        _svgBody.Append(string.Create(CultureInfo.InvariantCulture,
-            $"\" x=\"{r[0]:0.##}\" y=\"{r[1]:0.##}\" width=\"{r[2] - r[0]:0.##}\" height=\"{r[3] - r[1]:0.##}\" fill=\"transparent\"/></a>"));
+        Matrix transform = Matrix.Concat(_baseMatrix, new Matrix(1, 0, 0, 1, r[0], r[1]));
+        _html.Append($"<a href=\"{Escape(uri)}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"position:absolute;left:0;top:0;");
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $"width:{r[2] - r[0]:0.##}px;height:{r[3] - r[1]:0.##}px;transform:{transform.ToSvg()};transform-origin:0 0\"></a>"));
     }
 
     private static Matrix ComputeAppearanceMatrix(double[] bbox, Matrix formMatrix, double[] rect)
@@ -734,7 +852,6 @@ public sealed class SvgRenderer
 
         var glyphs = _state.Font.Decode(s.Bytes).ToList();
         var text = new StringBuilder();
-        double runWidth = 0;
         double displacement = 0;
 
         foreach (var g in glyphs)
@@ -742,45 +859,54 @@ public sealed class SvgRenderer
             text.Append(g.Unicode);
             double w0 = g.Width1000 / 1000.0 * _state.FontSize;
             double spacing = _state.CharSpacing + (g.IsSpace ? _state.WordSpacing : 0);
-            runWidth += w0;
             displacement += (w0 + spacing) * _state.HorizScale;
         }
 
-        if (text.Length > 0 && _state.RenderMode != 7)
+        if (text.Length > 0 && _state.RenderMode != 7 && _state.RenderMode != 3)
         {
-            EmitText(text.ToString(), runWidth);
+            EmitText(text.ToString());
         }
 
         _textMatrix = Matrix.Concat(_textMatrix, new Matrix(1, 0, 0, 1, displacement, 0));
     }
 
-    private void EmitText(string text, double runWidth)
+    private void EmitText(string text)
     {
-        Matrix m = Matrix.Concat(_state.Ctm, _textMatrix);
-        Matrix local = new(_state.HorizScale, 0, 0, -1, 0, _state.TextRise);
-        Matrix final = Matrix.Concat(m, local);
+        // Map em-space (origin at the baseline, y up) to device pixels.
+        Matrix trm = Matrix.Concat(Matrix.Concat(_state.Ctm, _textMatrix),
+            new Matrix(_state.FontSize * _state.HorizScale, 0, 0, _state.FontSize, 0, _state.TextRise));
 
-        string fill = _state.RenderMode is 3 or 7 ? "transparent" : _state.FillColor;
-
-        var sb = _svgBody;
-        sb.Append("<text transform=\"");
-        sb.Append(final.ToSvg());
-        sb.Append(string.Create(CultureInfo.InvariantCulture, $"\" font-size=\"{Math.Abs(_state.FontSize):0.###}\""));
-        sb.Append($" fill=\"{fill}\"");
-        AppendFontAttributes(sb, _state.Font!);
-        sb.Append(" xml:space=\"preserve\"");
-        if (runWidth > 0)
+        double fontHeight = Math.Sqrt(trm.C * trm.C + trm.D * trm.D);
+        if (fontHeight < 1e-3)
         {
-            sb.Append(string.Create(CultureInfo.InvariantCulture,
-                $" textLength=\"{runWidth:0.###}\" lengthAdjust=\"spacingAndGlyphs\""));
+            return;
         }
-        sb.Append(StyleAttr());
-        sb.Append('>');
-        sb.Append(Escape(text));
-        sb.Append("</text>");
+
+        // Compose with a CSS-local -> em-space mapping so the <span> top-left and
+        // alphabetic baseline land correctly (CSS y is down, baseline ~ascent).
+        double a = trm.A / fontHeight;
+        double b = trm.B / fontHeight;
+        double c = -trm.C / fontHeight;
+        double d = -trm.D / fontHeight;
+        double e = trm.C * AscentFactor + trm.E;
+        double f = trm.D * AscentFactor + trm.F;
+
+        _html.Append("<span style=\"position:absolute;left:0;top:0;white-space:pre;line-height:1");
+        _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
+        _html.Append(";color:").Append(_state.FillColor);
+        AppendFontStyle(_html, _state.Font!);
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $";transform:matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##});transform-origin:0 0"));
+        if (_state.BlendMode.Length > 0)
+        {
+            _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+        }
+        _html.Append("\">");
+        _html.Append(Escape(text));
+        _html.Append("</span>");
     }
 
-    private void AppendFontAttributes(StringBuilder sb, PdfFont font)
+    private void AppendFontStyle(StringBuilder sb, PdfFont font)
     {
         if (font.HasEmbedded)
         {
@@ -792,19 +918,19 @@ public sealed class SvgRenderer
                 _fontFaces.Append(
                     $"@font-face{{font-family:'{family}';src:url(data:font/{fmt};base64,{b64}) format('{fmt}');}}");
             }
-            sb.Append($" font-family=\"{family},{font.GenericFamily}\"");
+            sb.Append(";font-family:").Append(family).Append(',').Append(font.GenericFamily);
         }
         else
         {
-            sb.Append($" font-family=\"{font.GenericFamily}\"");
+            sb.Append(";font-family:").Append(font.GenericFamily);
         }
         if (font.Bold)
         {
-            sb.Append(" font-weight=\"bold\"");
+            sb.Append(";font-weight:bold");
         }
         if (font.Italic)
         {
-            sb.Append(" font-style=\"italic\"");
+            sb.Append(";font-style:italic");
         }
     }
 
@@ -889,6 +1015,8 @@ public sealed class SvgRenderer
             : Matrix.Identity;
         int patternType = patDict.Get("PatternType") is double pt ? (int)pt : 0;
 
+        // Shading patterns (type 2) map to CSS gradients. Tiling patterns
+        // (type 1) have no simple HTML equivalent and fall back to a solid color.
         if (patternType == 2)
         {
             object? shadingObj = patDict.Get("Shading");
@@ -897,84 +1025,11 @@ public sealed class SvgRenderer
             {
                 return null;
             }
-            string id = $"grad{_idCounter++}";
-            return ShadingBuilder.Build(shading, _xref, _resources, Matrix.Concat(_baseMatrix, matrix), id, _defs);
-        }
-        if (patternType == 1 && obj is PdfStream tileStream)
-        {
-            return RenderTilingPattern(tileStream, patDict, matrix);
+            return CssShadingBuilder.Build(shading, _xref, _resources,
+                Matrix.Concat(_baseMatrix, matrix), _viewW, _viewH);
         }
         return null;
     }
-
-    private string? RenderTilingPattern(PdfStream stream, Dict patDict, Matrix matrix)
-    {
-        if (_formDepth >= MaxFormDepth)
-        {
-            return null;
-        }
-
-        double[] bbox = patDict.Get("BBox") is List<object?> bb && bb.Count >= 4
-            ? [Num(bb[0]), Num(bb[1]), Num(bb[2]), Num(bb[3])]
-            : [0, 0, 1, 1];
-        double xStep = patDict.Get("XStep") is double xs && xs != 0 ? xs : bbox[2] - bbox[0];
-        double yStep = patDict.Get("YStep") is double ys && ys != 0 ? ys : bbox[3] - bbox[1];
-        if (xStep == 0 || yStep == 0)
-        {
-            return null;
-        }
-
-        // Snapshot renderer state, render the tile cell in pattern space, restore.
-        var savedBody = _svgBody;
-        var savedState = _state;
-        var savedResources = _resources;
-        int savedGroups = _openGroups;
-        string savedPath = _pathData.ToString();
-        Matrix savedTm = _textMatrix, savedTlm = _textLineMatrix;
-
-        _svgBody = new StringBuilder();
-        _openGroups = 0;
-        _pathData.Clear();
-        _state = new GraphicsState { Ctm = Matrix.Identity }; // tile drawn in pattern space
-        _resources = patDict.Get("Resources") as Dict ?? _resources;
-        _formDepth++;
-
-        try
-        {
-            RunOps(new ContentParser(Filters.StreamDecoder.Decode(stream)).Parse());
-        }
-        catch
-        {
-            // ignore malformed tile content
-        }
-        while (_openGroups > 0)
-        {
-            _svgBody.Append("</g>");
-            _openGroups--;
-        }
-        string tileBody = _svgBody.ToString();
-
-        _formDepth--;
-        _svgBody = savedBody;
-        _state = savedState;
-        _resources = savedResources;
-        _openGroups = savedGroups;
-        _pathData.Clear();
-        _pathData.Append(savedPath);
-        _textMatrix = savedTm;
-        _textLineMatrix = savedTlm;
-
-        string id = $"pat{_idCounter++}";
-        Matrix transform = Matrix.Concat(_baseMatrix, matrix);
-        _defs.Append(string.Create(CultureInfo.InvariantCulture,
-            $"<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" patternTransform=\"{transform.ToSvg()}\" x=\"{bbox[0]:0.##}\" y=\"{bbox[1]:0.##}\" width=\"{xStep:0.##}\" height=\"{yStep:0.##}\" overflow=\"visible\">"));
-        _defs.Append(tileBody);
-        _defs.Append("</pattern>");
-        return $"url(#{id})";
-    }
-
-    private string StyleAttr()
-        => _state.BlendMode.Length == 0 ? "" : $" style=\"mix-blend-mode:{_state.BlendMode}\"";
 
     private static string BlendCss(string pdfMode) => pdfMode switch
     {

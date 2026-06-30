@@ -1,4 +1,4 @@
-// Minimal PNG encoder used to emit decoded raster images as SVG <image> data
+// Minimal PNG encoder used to emit decoded raster images as HTML <img> data
 // URIs. Original C# implementation following the PNG specification (RFC 2083).
 // See NOTICE.
 
@@ -8,7 +8,7 @@ namespace BlazorPdf.Core.Render;
 
 /// <summary>
 /// Encodes 8-bit RGBA pixel buffers into PNG byte streams. Used so that images
-/// decoded by the C# engine can be embedded directly in the SVG output.
+/// decoded by the C# engine can be embedded directly in the HTML output.
 /// </summary>
 internal static class PngEncoder
 {

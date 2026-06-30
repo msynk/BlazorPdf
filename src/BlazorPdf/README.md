@@ -3,9 +3,9 @@
 A pure-C# PDF viewer component for Blazor.
 
 The rendering engine is a **clean-room C# port of [Mozilla pdf.js](https://github.com/mozilla/pdf.js)**.
-Like pdf.js, it parses PDF files and renders their content into plain DOM
-elements (HTML/CSS/SVG) produced by Blazor components — no `<canvas>` pixel
-blitting, no browser PDF plugin, no commercial SDK.
+Like pdf.js, it parses PDF files and renders their content into plain HTML/CSS
+DOM elements (positioned `<div>`/`<span>`/`<img>`) produced by Blazor
+components — no `<canvas>` pixel blitting, no browser PDF plugin, no commercial SDK.
 
 ## Status
 
@@ -23,24 +23,26 @@ This project is being built incrementally by porting pdf.js module-by-module.
 | `core/function.js`                     | `Core/Functions/*` (types 0/2/3/4)                | Done   |
 | `core/colorspace.js`                   | `Core/Render/ColorSpace.cs`                       | Done   |
 | `core/image.js` (raster)               | `Core/Render/PdfImage.cs` + `PngEncoder.cs`       | Done   |
-| `core/pattern.js` (axial/radial)       | `Core/Render/ShadingBuilder.cs`                   | Done   |
-| `core/pattern.js` (tiling/shading fill)| `SvgRenderer` `scn` patterns (`<pattern>`/gradient) | Done |
-| blend modes (`BM`)                     | `SvgRenderer` `mix-blend-mode`                    | Done   |
+| `core/pattern.js` (axial/radial)       | `Core/Render/CssShadingBuilder.cs`                | Done   |
+| `core/pattern.js` (shading fill)       | `HtmlRenderer` `scn` shading patterns (CSS gradients) | Done |
+| `core/pattern.js` (tiling fill)        | `HtmlRenderer` (falls back to solid color)        | Partial |
+| blend modes (`BM`)                     | `HtmlRenderer` `mix-blend-mode`                   | Done   |
 | `core/ccitt.js` (CCITTFaxDecode)       | `Core/Filters/CcittFaxDecoder.cs` (G3/G4)         | Done   |
 | `core/crypto.js` (standard handler)    | `Core/Security/*` (RC4, AES-128/256, R2–R6)       | Done   |
-| `core/annotation.js`                   | `SvgRenderer` annotation pass (appearances + links) | Done |
+| `core/annotation.js`                   | `HtmlRenderer` annotation pass (appearances + links) | Done |
 | `core/fonts.js` (embedded programs)    | `PdfFont` + `@font-face` emission (TrueType/OpenType) | Done |
-| `display/svg.js`                       | `Core/Render/SvgRenderer.cs`                      | Mostly |
+| `display/canvas.js`                    | `Core/Render/HtmlRenderer.cs`                     | Mostly |
 
 Working today: parsing (tables + xref streams + object streams), Flate/LZW/ASCII
 /RunLength/CCITT(G3/G4) filters with predictors, the page tree, content-stream
 operators, simple and Type0 font text extraction (ToUnicode + WinAnsi + Core-14
-metrics), SVG output with vector paths and selectable text, embedded TrueType/
+metrics), HTML output with vector paths (CSS `clip-path`) and selectable text
+(positioned `<span>`s), embedded TrueType/
 OpenType fonts (emitted as `@font-face`) with serif/sans/mono substitution and
 bold/italic otherwise, image XObjects and inline images (RGB/Gray/CMYK/Indexed/
 Separation color, JPEG passthrough, CCITT fax, soft masks), form XObjects,
-axial/radial shadings (`sh`) and tiling/shading pattern fills (`scn`) as SVG
-gradients and `<pattern>`s, separable blend modes (`BM`), clipping paths
+axial/radial shadings (`sh`) and shading pattern fills (`scn`) as CSS
+gradients, separable blend modes (`BM`), clipping paths
 (`W`/`W*`), decryption of documents secured with the standard handler (RC4 and
 AES, revisions 2–6, empty user password), and annotations (appearance-stream
 rendering plus clickable URI links).
