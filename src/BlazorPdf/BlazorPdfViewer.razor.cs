@@ -82,7 +82,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         if (firstRender)
         {
             _module = await JS.InvokeAsync<IJSObjectReference>(
-                "import", "./_content/BlazorPdf/blazorPdfViewer.js");
+                "import", "./_content/BlazorPdf/blazor-pdf.js");
             _dotNetRef = DotNetObjectReference.Create(this);
         }
 
