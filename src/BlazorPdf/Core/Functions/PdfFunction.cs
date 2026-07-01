@@ -192,29 +192,29 @@ internal sealed class StitchingFunction : PdfFunction
     }
 }
 
-/// <summary>Type 0: sampled function with multilinear interpolation (1-D input).</summary>
+/// <summary>Type 0: sampled function with multilinear interpolation (m inputs, n outputs).</summary>
 internal sealed class SampledFunction : PdfFunction
 {
     private readonly byte[] _samples;
     private readonly int _bps;
-    private readonly int _size;
+    private readonly int[] _size;
+    private readonly int _inCount;
     private readonly int _outCount;
     private readonly double[] _domain;
     private readonly double[] _encode;
     private readonly double[] _decode;
-    private readonly double[] _range;
 
-    private SampledFunction(byte[] samples, int bps, int size, int outCount,
-        double[] domain, double[] encode, double[] decode, double[] range)
+    private SampledFunction(byte[] samples, int bps, int[] size, int inCount, int outCount,
+        double[] domain, double[] encode, double[] decode)
     {
         _samples = samples;
         _bps = bps;
         _size = size;
+        _inCount = inCount;
         _outCount = outCount;
         _domain = domain;
         _encode = encode;
         _decode = decode;
-        _range = range;
     }
 
     public static SampledFunction? Build(PdfStream stream)
@@ -229,45 +229,104 @@ internal sealed class SampledFunction : PdfFunction
             return null;
         }
 
-        // Only single-input sampled functions are supported here.
-        int size = (int)sizeArr[0];
+        int inCount = domain.Length / 2;
         int outCount = range.Length / 2;
+        var size = new int[inCount];
+        for (int i = 0; i < inCount; i++)
+        {
+            size[i] = i < sizeArr.Length ? Math.Max(1, (int)sizeArr[i]) : 1;
+        }
+
+        // Encode defaults to [0 size0-1 0 size1-1 ...]; Decode defaults to Range.
         double[] encode = ReadNumbers(dict.Get("Encode"));
-        if (encode.Length < 2) encode = [0, size - 1];
+        if (encode.Length < inCount * 2)
+        {
+            encode = new double[inCount * 2];
+            for (int i = 0; i < inCount; i++)
+            {
+                encode[i * 2] = 0;
+                encode[i * 2 + 1] = size[i] - 1;
+            }
+        }
         double[] decode = ReadNumbers(dict.Get("Decode"));
-        if (decode.Length < range.Length) decode = range;
+        if (decode.Length < range.Length)
+        {
+            decode = range;
+        }
 
         byte[] samples = StreamDecoder.Decode(stream);
-        return new SampledFunction(samples, bps, size, outCount, domain, encode, decode, range);
+        return new SampledFunction(samples, bps, size, inCount, outCount, domain, encode, decode);
     }
 
     public override double[] Eval(double[] input)
     {
-        double x = Clamp(input.Length > 0 ? input[0] : 0, _domain[0], _domain[1]);
-        double e = Interp(x, _domain[0], _domain[1], _encode[0], _encode[1]);
-        e = Clamp(e, 0, _size - 1);
+        // Encode each input to a (fractional) sample coordinate within its axis.
+        var e = new double[_inCount];
+        var i0 = new int[_inCount];
+        var frac = new double[_inCount];
+        for (int k = 0; k < _inCount; k++)
+        {
+            double x = Clamp(k < input.Length ? input[k] : 0, _domain[k * 2], _domain[k * 2 + 1]);
+            double enc = Interp(x, _domain[k * 2], _domain[k * 2 + 1], _encode[k * 2], _encode[k * 2 + 1]);
+            enc = Clamp(enc, 0, _size[k] - 1);
+            i0[k] = (int)Math.Floor(enc);
+            if (i0[k] >= _size[k] - 1)
+            {
+                i0[k] = Math.Max(0, _size[k] - 1);
+                frac[k] = 0;
+            }
+            else
+            {
+                frac[k] = enc - i0[k];
+            }
+            e[k] = enc;
+        }
 
-        int i0 = (int)Math.Floor(e);
-        int i1 = Math.Min(i0 + 1, _size - 1);
-        double frac = e - i0;
-
-        var output = new double[_outCount];
         double maxVal = Math.Pow(2, _bps) - 1;
+        var output = new double[_outCount];
+
+        // Multilinear interpolation over the 2^m surrounding sample corners.
+        int corners = 1 << _inCount;
+        for (int corner = 0; corner < corners; corner++)
+        {
+            double weight = 1;
+            long flatIndex = 0;
+            long stride = 1;
+            for (int k = 0; k < _inCount; k++)
+            {
+                bool upper = (corner & (1 << k)) != 0;
+                int idx = i0[k] + (upper ? 1 : 0);
+                if (idx > _size[k] - 1)
+                {
+                    idx = _size[k] - 1;
+                }
+                weight *= upper ? frac[k] : 1 - frac[k];
+                flatIndex += idx * stride;
+                stride *= _size[k];
+            }
+            if (weight == 0)
+            {
+                continue;
+            }
+            for (int c = 0; c < _outCount; c++)
+            {
+                output[c] += weight * (ReadSample(flatIndex * _outCount + c) / maxVal);
+            }
+        }
+
+        // Apply the Decode array to map [0,1] sample space onto the output range.
         for (int c = 0; c < _outCount; c++)
         {
-            double s0 = ReadSample(i0 * _outCount + c) / maxVal;
-            double s1 = ReadSample(i1 * _outCount + c) / maxVal;
-            double s = s0 + frac * (s1 - s0);
             double d0 = _decode.Length > c * 2 ? _decode[c * 2] : 0;
             double d1 = _decode.Length > c * 2 + 1 ? _decode[c * 2 + 1] : 1;
-            output[c] = d0 + s * (d1 - d0);
+            output[c] = d0 + output[c] * (d1 - d0);
         }
         return output;
     }
 
-    private double ReadSample(int index)
+    private double ReadSample(long index)
     {
-        long bitPos = (long)index * _bps;
+        long bitPos = index * _bps;
         long bytePos = bitPos / 8;
         int bitOffset = (int)(bitPos % 8);
         int value = 0;

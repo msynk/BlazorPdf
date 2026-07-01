@@ -14,7 +14,7 @@ internal static class TestPdf
     /// number <c>i + 1</c>; the trailer's <c>/Root</c> points to
     /// <paramref name="rootObjNum"/>.
     /// </summary>
-    public static byte[] Build(IReadOnlyList<string> bodies, int rootObjNum)
+    public static byte[] Build(IReadOnlyList<string> bodies, int rootObjNum, string trailerExtra = "")
     {
         using var ms = new MemoryStream();
 
@@ -41,7 +41,7 @@ internal static class TestPdf
             Write($"{offsets[i]:D10} 00000 n \n");     // in-use entry, exactly 20 bytes
         }
 
-        Write($"trailer\n<< /Size {bodies.Count + 1} /Root {rootObjNum} 0 R >>\n");
+        Write($"trailer\n<< /Size {bodies.Count + 1} /Root {rootObjNum} 0 R{trailerExtra} >>\n");
         Write($"startxref\n{xrefPos}\n%%EOF");
 
         return ms.ToArray();

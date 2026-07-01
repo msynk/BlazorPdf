@@ -49,6 +49,17 @@ internal static class GlyphList
             return mapped;
         }
 
+        // Symbol (Greek/math) and ZapfDingbats glyph names, consulted after the
+        // Latin AGL subset so shared names keep their Latin meaning.
+        if (SymbolMap.TryGetValue(name, out string? sym))
+        {
+            return sym;
+        }
+        if (DingbatsMap.TryGetValue(name, out string? ding))
+        {
+            return ding;
+        }
+
         // Single ASCII letters are their own glyph names in the Adobe Glyph List
         // (e.g. "A" -> U+0041); without this a /Differences remap to a letter
         // would be lost and fall back to the wrong base-encoding character.
@@ -162,5 +173,96 @@ internal static class GlyphList
         ["yacute"] = "\u00FD", ["thorn"] = "\u00FE", ["ydieresis"] = "\u00FF",
         ["Scaron"] = "\u0160", ["scaron"] = "\u0161", ["Zcaron"] = "\u017D",
         ["zcaron"] = "\u017E", ["Ydieresis"] = "\u0178",
+    };
+
+    // Adobe Symbol glyph names → Unicode (Greek alphabet + mathematical signs),
+    // mirroring the Symbol subset of pdf.js `glyphlist.js` / `symbol` handling.
+    private static readonly Dictionary<string, string> SymbolMap = new(StringComparer.Ordinal)
+    {
+        ["Alpha"] = "\u0391", ["Beta"] = "\u0392", ["Gamma"] = "\u0393", ["Delta"] = "\u0394",
+        ["Epsilon"] = "\u0395", ["Zeta"] = "\u0396", ["Eta"] = "\u0397", ["Theta"] = "\u0398",
+        ["Iota"] = "\u0399", ["Kappa"] = "\u039A", ["Lambda"] = "\u039B", ["Mu"] = "\u039C",
+        ["Nu"] = "\u039D", ["Xi"] = "\u039E", ["Omicron"] = "\u039F", ["Pi"] = "\u03A0",
+        ["Rho"] = "\u03A1", ["Sigma"] = "\u03A3", ["Tau"] = "\u03A4", ["Upsilon"] = "\u03A5",
+        ["Phi"] = "\u03A6", ["Chi"] = "\u03A7", ["Psi"] = "\u03A8", ["Omega"] = "\u03A9",
+        ["alpha"] = "\u03B1", ["beta"] = "\u03B2", ["gamma"] = "\u03B3", ["delta"] = "\u03B4",
+        ["epsilon"] = "\u03B5", ["zeta"] = "\u03B6", ["eta"] = "\u03B7", ["theta"] = "\u03B8",
+        ["iota"] = "\u03B9", ["kappa"] = "\u03BA", ["lambda"] = "\u03BB", ["nu"] = "\u03BD",
+        ["xi"] = "\u03BE", ["omicron"] = "\u03BF", ["rho"] = "\u03C1", ["sigma"] = "\u03C3",
+        ["tau"] = "\u03C4", ["upsilon"] = "\u03C5", ["chi"] = "\u03C7", ["psi"] = "\u03C8",
+        ["omega"] = "\u03C9", ["theta1"] = "\u03D1", ["phi1"] = "\u03D5", ["sigma1"] = "\u03C2",
+        ["omega1"] = "\u03D6", ["Upsilon1"] = "\u03D2", ["phi"] = "\u03C6",
+        ["universal"] = "\u2200", ["existential"] = "\u2203", ["suchthat"] = "\u220B",
+        ["congruent"] = "\u2245", ["therefore"] = "\u2234", ["perpendicular"] = "\u22A5",
+        ["similar"] = "\u223C", ["minute"] = "\u2032", ["second"] = "\u2033",
+        ["proportional"] = "\u221D", ["equivalence"] = "\u2261", ["aleph"] = "\u2135",
+        ["circlemultiply"] = "\u2297", ["circleplus"] = "\u2295", ["emptyset"] = "\u2205",
+        ["intersection"] = "\u2229", ["union"] = "\u222A", ["propersuperset"] = "\u2283",
+        ["reflexsuperset"] = "\u2287", ["notsubset"] = "\u2284", ["propersubset"] = "\u2282",
+        ["reflexsubset"] = "\u2286", ["element"] = "\u2208", ["notelement"] = "\u2209",
+        ["angle"] = "\u2220", ["gradient"] = "\u2207", ["dotmath"] = "\u22C5",
+        ["logicaland"] = "\u2227", ["logicalor"] = "\u2228", ["arrowboth"] = "\u2194",
+        ["arrowleft"] = "\u2190", ["arrowup"] = "\u2191", ["arrowright"] = "\u2192",
+        ["arrowdown"] = "\u2193", ["arrowdblboth"] = "\u21D4", ["arrowdblleft"] = "\u21D0",
+        ["arrowdblup"] = "\u21D1", ["arrowdblright"] = "\u21D2", ["arrowdbldown"] = "\u21D3",
+        ["weierstrass"] = "\u2118", ["Ifraktur"] = "\u2111", ["Rfraktur"] = "\u211C",
+        ["club"] = "\u2663", ["diamond"] = "\u2666", ["heart"] = "\u2665", ["spade"] = "\u2660",
+        ["asteriskmath"] = "\u2217", ["radicalex"] = "\u203E", ["carriagereturn"] = "\u21B5",
+        ["registerserif"] = "\u00AE", ["copyrightserif"] = "\u00A9", ["trademarkserif"] = "\u2122",
+        ["registersans"] = "\u00AE", ["copyrightsans"] = "\u00A9", ["trademarksans"] = "\u2122",
+        ["angleleft"] = "\u2329", ["angleright"] = "\u232A",
+    };
+
+    // Adobe ZapfDingbats "aNNN" glyph names → Unicode dingbat characters,
+    // the standard mapping used by pdf.js for ZapfDingbats text extraction.
+    private static readonly Dictionary<string, string> DingbatsMap = new(StringComparer.Ordinal)
+    {
+        ["a1"] = "\u2701", ["a2"] = "\u2702", ["a3"] = "\u2704", ["a4"] = "\u260E",
+        ["a5"] = "\u2706", ["a6"] = "\u271D", ["a7"] = "\u271E", ["a8"] = "\u271F",
+        ["a9"] = "\u2720", ["a10"] = "\u2721", ["a11"] = "\u261B", ["a12"] = "\u261E",
+        ["a13"] = "\u270C", ["a14"] = "\u270D", ["a15"] = "\u270E", ["a16"] = "\u270F",
+        ["a17"] = "\u2711", ["a18"] = "\u2712", ["a19"] = "\u2713", ["a20"] = "\u2714",
+        ["a21"] = "\u2715", ["a22"] = "\u2716", ["a23"] = "\u2717", ["a24"] = "\u2718",
+        ["a25"] = "\u2719", ["a26"] = "\u271A", ["a27"] = "\u271B", ["a28"] = "\u271C",
+        ["a29"] = "\u2722", ["a30"] = "\u2723", ["a31"] = "\u2724", ["a32"] = "\u2725",
+        ["a33"] = "\u2726", ["a34"] = "\u2727", ["a35"] = "\u2605", ["a36"] = "\u2729",
+        ["a37"] = "\u272A", ["a38"] = "\u272B", ["a39"] = "\u272C", ["a40"] = "\u272D",
+        ["a41"] = "\u272E", ["a42"] = "\u272F", ["a43"] = "\u2730", ["a44"] = "\u2731",
+        ["a45"] = "\u2732", ["a46"] = "\u2733", ["a47"] = "\u2734", ["a48"] = "\u2735",
+        ["a49"] = "\u2736", ["a50"] = "\u2737", ["a51"] = "\u2738", ["a52"] = "\u2739",
+        ["a53"] = "\u273A", ["a54"] = "\u273B", ["a55"] = "\u273C", ["a56"] = "\u273D",
+        ["a57"] = "\u273E", ["a58"] = "\u273F", ["a59"] = "\u2740", ["a60"] = "\u2741",
+        ["a61"] = "\u2742", ["a62"] = "\u2743", ["a63"] = "\u2744", ["a64"] = "\u2745",
+        ["a65"] = "\u2746", ["a66"] = "\u2747", ["a67"] = "\u2748", ["a68"] = "\u2749",
+        ["a69"] = "\u274A", ["a70"] = "\u274B", ["a71"] = "\u25CF", ["a72"] = "\u274D",
+        ["a73"] = "\u25A0", ["a74"] = "\u274F", ["a75"] = "\u2751", ["a76"] = "\u25B2",
+        ["a77"] = "\u25BC", ["a78"] = "\u25C6", ["a79"] = "\u2756", ["a81"] = "\u25D7",
+        ["a82"] = "\u2758", ["a83"] = "\u2759", ["a84"] = "\u275A", ["a97"] = "\u275B",
+        ["a98"] = "\u275C", ["a99"] = "\u275D", ["a100"] = "\u275E", ["a101"] = "\u2761",
+        ["a102"] = "\u2762", ["a103"] = "\u2763", ["a104"] = "\u2764", ["a105"] = "\u2710",
+        ["a106"] = "\u2765", ["a107"] = "\u2766", ["a108"] = "\u2767", ["a109"] = "\u2660",
+        ["a110"] = "\u2665", ["a111"] = "\u2666", ["a112"] = "\u2663", ["a117"] = "\u2709",
+        ["a118"] = "\u2708", ["a119"] = "\u2707", ["a120"] = "\u2460", ["a121"] = "\u2461",
+        ["a122"] = "\u2462", ["a123"] = "\u2463", ["a124"] = "\u2464", ["a125"] = "\u2465",
+        ["a126"] = "\u2466", ["a127"] = "\u2467", ["a128"] = "\u2468", ["a129"] = "\u2469",
+        ["a130"] = "\u2776", ["a131"] = "\u2777", ["a132"] = "\u2778", ["a133"] = "\u2779",
+        ["a134"] = "\u277A", ["a135"] = "\u277B", ["a136"] = "\u277C", ["a137"] = "\u277D",
+        ["a138"] = "\u277E", ["a139"] = "\u277F", ["a140"] = "\u2780", ["a141"] = "\u2781",
+        ["a142"] = "\u2782", ["a143"] = "\u2783", ["a144"] = "\u2784", ["a145"] = "\u2785",
+        ["a146"] = "\u2786", ["a147"] = "\u2787", ["a148"] = "\u2788", ["a149"] = "\u2789",
+        ["a150"] = "\u278A", ["a151"] = "\u278B", ["a152"] = "\u278C", ["a153"] = "\u278D",
+        ["a154"] = "\u278E", ["a155"] = "\u278F", ["a156"] = "\u2790", ["a157"] = "\u2791",
+        ["a158"] = "\u2792", ["a159"] = "\u2793", ["a160"] = "\u2794", ["a161"] = "\u2192",
+        ["a162"] = "\u27A3", ["a163"] = "\u2194", ["a164"] = "\u2195", ["a165"] = "\u2799",
+        ["a166"] = "\u279B", ["a167"] = "\u279C", ["a168"] = "\u279D", ["a169"] = "\u279E",
+        ["a170"] = "\u279F", ["a171"] = "\u27A0", ["a172"] = "\u27A1", ["a173"] = "\u27A2",
+        ["a174"] = "\u27A4", ["a175"] = "\u27A5", ["a176"] = "\u27A6", ["a177"] = "\u27A7",
+        ["a178"] = "\u27A8", ["a179"] = "\u27A9", ["a180"] = "\u27AB", ["a181"] = "\u27AD",
+        ["a182"] = "\u27AF", ["a183"] = "\u27B2", ["a184"] = "\u27B3", ["a185"] = "\u27B5",
+        ["a186"] = "\u27B8", ["a187"] = "\u27BA", ["a188"] = "\u27BB", ["a189"] = "\u27BC",
+        ["a190"] = "\u27BD", ["a191"] = "\u27BE", ["a192"] = "\u279A", ["a193"] = "\u27AA",
+        ["a194"] = "\u27B6", ["a195"] = "\u27B9", ["a196"] = "\u2798", ["a197"] = "\u27B4",
+        ["a198"] = "\u27B7", ["a199"] = "\u27AC", ["a200"] = "\u27AE", ["a201"] = "\u27B1",
+        ["a202"] = "\u2703", ["a203"] = "\u2750", ["a204"] = "\u2752",
     };
 }

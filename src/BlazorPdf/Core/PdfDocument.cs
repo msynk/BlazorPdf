@@ -14,6 +14,8 @@ public sealed class PdfDocument
     private List<PdfPage>? _pages;
     private readonly Dictionary<Dict, int> _pageIndexByDict = new(ReferenceEqualityComparer.Instance);
     private IReadOnlyList<OutlineItem>? _outline;
+    private PdfMetadata? _metadata;
+    private IReadOnlyList<string>? _pageLabels;
 
     private PdfDocument(XRef xref) => _xref = xref;
 
@@ -48,6 +50,21 @@ public sealed class PdfDocument
             return _outline;
         }
     }
+
+    /// <summary>
+    /// Document metadata: the <c>/Info</c> dictionary fields plus the raw XMP
+    /// packet (<c>/Metadata</c>) when present.
+    /// </summary>
+    public PdfMetadata Metadata =>
+        _metadata ??= PdfMetadata.Build(_xref, _xref.Trailer?.Get("Info") as Dict, Catalog);
+
+    /// <summary>
+    /// The per-page labels declared by the catalog's <c>/PageLabels</c> number
+    /// tree (e.g. "i", "ii", "1", "A-1"), one per page in document order. When no
+    /// <c>/PageLabels</c> entry exists, labels default to the 1-based page number.
+    /// </summary>
+    public IReadOnlyList<string> PageLabels =>
+        _pageLabels ??= PageLabelBuilder.Build(_xref, Catalog, PageCount);
 
     /// <summary>Parses <paramref name="bytes"/> into a document model.</summary>
     public static PdfDocument Load(byte[] bytes)
@@ -85,6 +102,7 @@ public sealed class PdfDocument
     private readonly struct InheritedAttributes
     {
         public double[]? MediaBox { get; init; }
+        public double[]? CropBox { get; init; }
         public Dict? Resources { get; init; }
         public int? Rotate { get; init; }
 
@@ -93,6 +111,7 @@ public sealed class PdfDocument
             return new InheritedAttributes
             {
                 MediaBox = ReadRectangle(node.Get("MediaBox")) ?? MediaBox,
+                CropBox = ReadRectangle(node.Get("CropBox")) ?? CropBox,
                 Resources = node.Get("Resources") as Dict ?? Resources,
                 Rotate = node.Get("Rotate") is double r ? NormalizeRotation((int)r) : Rotate,
             };
@@ -131,7 +150,8 @@ public sealed class PdfDocument
             pages.Count + 1,
             mediaBox,
             current.Resources,
-            current.Rotate ?? 0));
+            current.Rotate ?? 0,
+            current.CropBox));
     }
 
     private static double[]? ReadRectangle(object? value)

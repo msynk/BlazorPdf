@@ -168,9 +168,10 @@ public sealed class PdfFont
     {
         object? enc = fontDict.Get("Encoding");
 
-        // The default base encoding: Standard for the symbolic core fonts,
-        // WinAnsi otherwise (a pragmatic choice that maximizes correct text).
-        string[] baseTable = Encodings.WinAnsi;
+        // The default base encoding: the symbolic fonts (Symbol / ZapfDingbats)
+        // carry their own built-in encoding; WinAnsi otherwise (a pragmatic
+        // choice that maximizes correct text).
+        string[] baseTable = DefaultBaseEncoding(baseFont);
         List<object?>? differences = null;
 
         switch (enc)
@@ -208,6 +209,28 @@ public sealed class PdfFont
             }
         }
         return table;
+    }
+
+    /// <summary>
+    /// Chooses the default base encoding for a simple font from its base-font
+    /// name: the built-in encoding for Symbol/ZapfDingbats, WinAnsi otherwise.
+    /// </summary>
+    private static string[] DefaultBaseEncoding(string baseFont)
+    {
+        // Strip a subset prefix such as "ABCDEF+Symbol".
+        int plus = baseFont.IndexOf('+');
+        string name = plus >= 0 ? baseFont[(plus + 1)..] : baseFont;
+
+        if (name.Contains("ZapfDingbats", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Dingbats", StringComparison.OrdinalIgnoreCase))
+        {
+            return Encodings.ZapfDingbats;
+        }
+        if (name.Contains("Symbol", StringComparison.OrdinalIgnoreCase))
+        {
+            return Encodings.Symbol;
+        }
+        return Encodings.WinAnsi;
     }
 
     private static PdfFont CreateType0(Dict fontDict, IXRef xref, string baseFont, ToUnicodeCMap? toUnicode)

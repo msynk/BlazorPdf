@@ -56,5 +56,34 @@ public class EncodingsTests
         Assert.Equal(256, Encodings.Standard.Length);
         Assert.Equal(256, Encodings.WinAnsi.Length);
         Assert.Equal(256, Encodings.MacRoman.Length);
+        Assert.Equal(256, Encodings.Symbol.Length);
+        Assert.Equal(256, Encodings.ZapfDingbats.Length);
+    }
+
+    [Fact]
+    public void ByName_resolves_symbolic_encodings()
+    {
+        Assert.Same(Encodings.Symbol, Encodings.ByName("Symbol"));
+        Assert.Same(Encodings.ZapfDingbats, Encodings.ByName("ZapfDingbatsEncoding"));
+    }
+
+    [Fact]
+    public void Symbol_encoding_maps_greek_and_math()
+    {
+        Assert.Equal("space", Encodings.Symbol[0x20]);
+        Assert.Equal("Alpha", Encodings.Symbol[0x41]);   // 'A' position -> Greek Alpha
+        Assert.Equal("beta", Encodings.Symbol[0x62]);    // 'b' position -> Greek beta
+        Assert.Equal("universal", Encodings.Symbol[0x22]);
+        Assert.Equal("infinity", Encodings.Symbol[0xA5]);
+        Assert.Equal("integral", Encodings.Symbol[0xF2]);
+    }
+
+    [Fact]
+    public void ZapfDingbats_encoding_maps_ornaments()
+    {
+        Assert.Equal("space", Encodings.ZapfDingbats[0x20]);
+        Assert.Equal("a1", Encodings.ZapfDingbats[0x21]);
+        Assert.Equal("a10", Encodings.ZapfDingbats[0x41]);
+        Assert.Equal("a191", Encodings.ZapfDingbats[0xFE]);
     }
 }

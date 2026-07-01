@@ -25,19 +25,24 @@ real DOM, selection, find-in-page and accessibility work for free.
 - Parsing: cross-reference tables, xref streams, object streams, trailers, `/Prev` chains
 - Filters: Flate, LZW, ASCIIHex, ASCII85, RunLength, CCITT (G3/G4) with PNG/TIFF predictors
 - Fonts: simple and Type0/CID text; embedded TrueType/OpenType via `@font-face`;
-  Core-14 metrics; **base encodings (Standard/WinAnsi/MacRoman) + `/Differences`**;
-  glyph-name → Unicode (Adobe Glyph List subset + `uniXXXX`/`uXXXXXX`); ToUnicode CMaps
+  Core-14 metrics; **base encodings (Standard/WinAnsi/MacRoman/Symbol/ZapfDingbats) + `/Differences`**;
+  glyph-name → Unicode (Adobe Glyph List subset, Symbol Greek/math, ZapfDingbats,
+  plus `uniXXXX`/`uXXXXXX`); ToUnicode CMaps
 - Color: DeviceGray/RGB/CMYK, ICCBased (by component count), Indexed, Separation/DeviceN
   (tint transforms), and **CIE L\*a\*b\*** with white-point conversion
 - Color operators: `cs`/`CS` color-space tracking so `sc`/`scn`/`SC`/`SCN` paint
   through the actual current space
-- Functions: sampled (type 0), exponential (2), stitching (3), PostScript calculator (4)
+- Functions: sampled (type 0, **multi-dimensional input**), exponential (2),
+  stitching (3), PostScript calculator (4)
 - Paths: fills (nonzero/even-odd), clipping (`W`/`W*`), strokes, **dash patterns (`d`)**,
   line cap/join tracking
 - Images: RGB/Gray/CMYK/Indexed/Separation, JPEG passthrough, CCITT fax, image masks, soft masks
 - Shadings: axial (type 2) and radial (type 3) as CSS gradients; shading-pattern fills
 - Blend modes (`BM`) via CSS `mix-blend-mode`
 - Annotations: appearance-stream rendering and clickable URI links
+- Document: page tree with inherited **MediaBox/CropBox/Bleed/Trim/Art boxes** and
+  rotation; **bookmarks/outline** with resolved destinations; **document metadata**
+  (`/Info` fields + parsed dates + raw XMP `/Metadata`); **page labels** (`/PageLabels`)
 - Security: standard handler decryption (RC4, AES-128/256, revisions 2–6, empty user password)
 
 ## Installation
@@ -108,6 +113,11 @@ foreach (OutlineItem item in doc.Outline)
 {
     Console.WriteLine($"{item.Title} -> page {item.PageNumber}");
 }
+
+// Metadata and per-page labels:
+Console.WriteLine(doc.Metadata.Title);
+Console.WriteLine(doc.Metadata.CreationDate);
+Console.WriteLine(doc.PageLabels[0]);  // e.g. "i" or "1"
 ```
 
 ## Project layout

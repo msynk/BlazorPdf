@@ -34,6 +34,27 @@ public class GlyphListTests
         => Assert.Equal("ff", GlyphList.ToUnicode("f_f"));
 
     [Theory]
+    [InlineData("Alpha", "\u0391")]
+    [InlineData("beta", "\u03B2")]
+    [InlineData("pi", "\u03C0")]
+    [InlineData("infinity", "\u221E")]
+    [InlineData("universal", "\u2200")]
+    [InlineData("integral", "\u222B")]
+    public void Maps_symbol_glyphs(string name, string expected)
+        => Assert.Equal(expected, GlyphList.ToUnicode(name));
+
+    [Theory]
+    [InlineData("a1", "\u2701")]
+    [InlineData("a13", "\u270C")]
+    [InlineData("a120", "\u2460")]
+    public void Maps_dingbats_glyphs(string name, string expected)
+        => Assert.Equal(expected, GlyphList.ToUnicode(name));
+
+    [Fact]
+    public void Latin_meaning_wins_over_symbol_name()
+        => Assert.Equal("A", GlyphList.ToUnicode("A")); // not Greek Alpha
+
+    [Theory]
     [InlineData(".notdef")]
     [InlineData("")]
     [InlineData("g42")]

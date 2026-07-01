@@ -18,6 +18,8 @@ internal static class Encodings
         "WinAnsiEncoding" => WinAnsi,
         "MacRomanEncoding" => MacRoman,
         "PDFDocEncoding" => WinAnsi, // close enough for text extraction
+        "Symbol" or "SymbolEncoding" or "SymbolSetEncoding" => Symbol,
+        "ZapfDingbats" or "ZapfDingbatsEncoding" => ZapfDingbats,
         _ => null,
     };
 
@@ -54,6 +56,8 @@ internal static class Encodings
     public static readonly string[] Standard = BuildStandard();
     public static readonly string[] WinAnsi = BuildWinAnsi();
     public static readonly string[] MacRoman = BuildMacRoman();
+    public static readonly string[] Symbol = BuildSymbol();
+    public static readonly string[] ZapfDingbats = BuildZapfDingbats();
 
     private static string[] BuildStandard()
     {
@@ -153,6 +157,123 @@ internal static class Encodings
         e[0xF5] = "dotlessi"; e[0xF6] = "circumflex"; e[0xF7] = "tilde"; e[0xF8] = "macron";
         e[0xF9] = "breve"; e[0xFA] = "dotaccent"; e[0xFB] = "ring"; e[0xFC] = "cedilla";
         e[0xFD] = "hungarumlaut"; e[0xFE] = "ogonek"; e[0xFF] = "caron";
+        return e;
+    }
+
+    // Adobe Symbol font built-in encoding (PDF 32000-1:2008 Annex D.5), a
+    // clean-room port of pdf.js `SymbolSetEncoding`. Greek letters and math signs.
+    private static string[] BuildSymbol()
+    {
+        var e = new string[256];
+        for (int i = 0; i < 256; i++)
+        {
+            e[i] = "";
+        }
+        string[] low =
+        [
+            /*32*/ "space", "exclam", "universal", "numbersign", "existential", "percent",
+            "ampersand", "suchthat", "parenleft", "parenright", "asteriskmath", "plus",
+            "comma", "minus", "period", "slash", "zero", "one", "two", "three", "four",
+            "five", "six", "seven", "eight", "nine", "colon", "semicolon", "less", "equal",
+            "greater", "question", "congruent", "Alpha", "Beta", "Chi", "Delta", "Epsilon",
+            "Phi", "Gamma", "Eta", "Iota", "theta1", "Kappa", "Lambda", "Mu", "Nu", "Omicron",
+            "Pi", "Theta", "Rho", "Sigma", "Tau", "Upsilon", "sigma1", "Omega", "Xi", "Psi",
+            "Zeta", "bracketleft", "therefore", "bracketright", "perpendicular", "underscore",
+            "radicalex", "alpha", "beta", "chi", "delta", "epsilon", "phi", "gamma", "eta",
+            "iota", "phi1", "kappa", "lambda", "mu", "nu", "omicron", "pi", "theta", "rho",
+            "sigma", "tau", "upsilon", "omega1", "omega", "xi", "psi", "zeta", "braceleft",
+            "bar", "braceright", "similar",
+        ];
+        for (int i = 0; i < low.Length; i++)
+        {
+            e[32 + i] = low[i];
+        }
+        string[] high =
+        [
+            /*161*/ "Upsilon1", "minute", "lessequal", "fraction", "infinity", "florin",
+            "club", "diamond", "heart", "spade", "arrowboth", "arrowleft", "arrowup",
+            "arrowright", "arrowdown", "degree", "plusminus", "second", "greaterequal",
+            "multiply", "proportional", "partialdiff", "bullet", "divide", "notequal",
+            "equivalence", "approxequal", "ellipsis", "arrowvertex", "arrowhorizex",
+            "carriagereturn", "aleph", "Ifraktur", "Rfraktur", "weierstrass",
+            "circlemultiply", "circleplus", "emptyset", "intersection", "union",
+            "propersuperset", "reflexsuperset", "notsubset", "propersubset", "reflexsubset",
+            "element", "notelement", "angle", "gradient", "registerserif", "copyrightserif",
+            "trademarkserif", "product", "radical", "dotmath", "logicalnot", "logicaland",
+            "logicalor", "arrowdblboth", "arrowdblleft", "arrowdblup", "arrowdblright",
+            "arrowdbldown", "lozenge", "angleleft", "registersans", "copyrightsans",
+            "trademarksans", "summation", "parenlefttp", "parenleftex", "parenleftbt",
+            "bracketlefttp", "bracketleftex", "bracketleftbt", "bracelefttp", "braceleftmid",
+            "braceleftbt", "barex",
+        ];
+        for (int i = 0; i < high.Length; i++)
+        {
+            e[161 + i] = high[i];
+        }
+        // 240 is unused; 241..254 continue the delimiter-extension glyphs.
+        string[] tail =
+        [
+            /*241*/ "angleright", "integral", "integraltp", "integralex", "integralbt",
+            "parenrighttp", "parenrightex", "parenrightbt", "bracketrighttp",
+            "bracketrightex", "bracketrightbt", "bracerighttp", "bracerightmid",
+            "bracerightbt",
+        ];
+        for (int i = 0; i < tail.Length; i++)
+        {
+            e[241 + i] = tail[i];
+        }
+        return e;
+    }
+
+    // Adobe ZapfDingbats built-in encoding (PDF 32000-1:2008 Annex D.6), a
+    // clean-room port of pdf.js `ZapfDingbatsEncoding`.
+    private static string[] BuildZapfDingbats()
+    {
+        var e = new string[256];
+        for (int i = 0; i < 256; i++)
+        {
+            e[i] = "";
+        }
+        string[] low =
+        [
+            /*32*/ "space", "a1", "a2", "a202", "a3", "a4", "a5", "a119", "a118", "a117",
+            "a11", "a12", "a13", "a14", "a15", "a16", "a105", "a17", "a18", "a19", "a20",
+            "a21", "a22", "a23", "a24", "a25", "a26", "a27", "a28", "a6", "a7", "a8", "a9",
+            "a10", "a29", "a30", "a31", "a32", "a33", "a34", "a35", "a36", "a37", "a38",
+            "a39", "a40", "a41", "a42", "a43", "a44", "a45", "a46", "a47", "a48", "a49",
+            "a50", "a51", "a52", "a53", "a54", "a55", "a56", "a57", "a58", "a59", "a60",
+            "a61", "a62", "a63", "a64", "a65", "a66", "a67", "a68", "a69", "a70", "a71",
+            "a72", "a73", "a74", "a203", "a75", "a204", "a76", "a77", "a78", "a79", "a81",
+            "a82", "a83", "a84", "a97", "a98", "a99", "a100",
+        ];
+        for (int i = 0; i < low.Length; i++)
+        {
+            e[32 + i] = low[i];
+        }
+        string[] high =
+        [
+            /*161*/ "a101", "a102", "a103", "a104", "a106", "a107", "a108", "a112", "a111",
+            "a110", "a109", "a120", "a121", "a122", "a123", "a124", "a125", "a126", "a127",
+            "a128", "a129", "a130", "a131", "a132", "a133", "a134", "a135", "a136", "a137",
+            "a138", "a139", "a140", "a141", "a142", "a143", "a144", "a145", "a146", "a147",
+            "a148", "a149", "a150", "a151", "a152", "a153", "a154", "a155", "a156", "a157",
+            "a158", "a159", "a160", "a161", "a163", "a164", "a196", "a165", "a192", "a166",
+            "a167", "a168", "a169", "a170", "a171", "a172", "a173", "a162", "a174", "a175",
+            "a176", "a177", "a178", "a179", "a193", "a180", "a199", "a181", "a200", "a182",
+        ];
+        for (int i = 0; i < high.Length; i++)
+        {
+            e[161 + i] = high[i];
+        }
+        string[] tail =
+        [
+            /*241*/ "a201", "a183", "a184", "a197", "a185", "a194", "a198", "a186", "a195",
+            "a187", "a188", "a189", "a190", "a191",
+        ];
+        for (int i = 0; i < tail.Length; i++)
+        {
+            e[241 + i] = tail[i];
+        }
         return e;
     }
 }
