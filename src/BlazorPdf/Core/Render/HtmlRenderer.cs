@@ -939,6 +939,15 @@ public sealed class HtmlRenderer
         }
 
         var glyphs = _state.Font.Decode(s.Bytes).ToList();
+
+        // Type3 glyphs are content-stream procedures, drawn as graphics rather
+        // than emitted as selectable text.
+        if (_state.Font.IsType3)
+        {
+            ShowType3Text(glyphs);
+            return;
+        }
+
         var text = new StringBuilder();
         double displacement = 0;
 
@@ -956,6 +965,78 @@ public sealed class HtmlRenderer
         }
 
         _textMatrix = Matrix.Concat(_textMatrix, new Matrix(1, 0, 0, 1, displacement, 0));
+    }
+
+    /// <summary>
+    /// Renders a run of Type3 glyphs by executing each glyph's content-stream
+    /// procedure at the current text position, advancing the text matrix between
+    /// glyphs (so a subsequent glyph is drawn to the right of the previous one).
+    /// </summary>
+    private void ShowType3Text(List<Glyph> glyphs)
+    {
+        PdfFont font = _state.Font!;
+        Matrix fontMatrix = font.Type3!.FontMatrix;
+        bool visible = _state.RenderMode is not (3 or 7);
+
+        foreach (var g in glyphs)
+        {
+            if (visible && font.Type3.GetGlyphProcedure(g.Code) is { } proc)
+            {
+                RenderType3Glyph(proc, fontMatrix, font.Type3.Resources);
+            }
+
+            double w0 = g.Width1000 / 1000.0 * _state.FontSize;
+            double spacing = _state.CharSpacing + (g.IsSpace ? _state.WordSpacing : 0);
+            double displacement = (w0 + spacing) * _state.HorizScale;
+            _textMatrix = Matrix.Concat(_textMatrix, new Matrix(1, 0, 0, 1, displacement, 0));
+        }
+    }
+
+    private void RenderType3Glyph(PdfStream proc, Matrix fontMatrix, Dict? glyphResources)
+    {
+        if (_formDepth >= MaxFormDepth)
+        {
+            return;
+        }
+        _formDepth++;
+
+        // Compose the glyph-space -> device transform from the current text
+        // rendering matrix before mutating the graphics state.
+        Matrix trm = Matrix.Concat(Matrix.Concat(_state.Ctm, _textMatrix),
+            new Matrix(_state.FontSize * _state.HorizScale, 0, 0, _state.FontSize, 0, _state.TextRise));
+        Matrix glyphToDevice = Matrix.Concat(trm, fontMatrix);
+
+        _stack.Push(_state.Clone());
+        _groupDepthStack.Push(_openGroups);
+        Dict? savedResources = _resources;
+
+        _state.Ctm = glyphToDevice;
+        // Glyph procedures may reference their own resources; fall back to the
+        // page resources so shared fonts/images still resolve.
+        _resources = glyphResources ?? _page.Resources;
+
+        try
+        {
+            byte[] content = Filters.StreamDecoder.Decode(proc);
+            RunOps(new ContentParser(content).Parse());
+        }
+        catch
+        {
+            // Ignore malformed glyph procedures.
+        }
+
+        _resources = savedResources;
+        if (_stack.Count > 0)
+        {
+            _state = _stack.Pop();
+            int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
+            while (_openGroups > target)
+            {
+                _html.Append("</div>");
+                _openGroups--;
+            }
+        }
+        _formDepth--;
     }
 
     private void EmitText(string text)

@@ -13,6 +13,13 @@ public sealed class OutlineItem
     /// <summary>The target page (1-based), or <c>null</c> if it could not be resolved.</summary>
     public int? PageNumber { get; init; }
 
+    /// <summary>
+    /// The full resolved destination (page plus view parameters), or <c>null</c>
+    /// when the bookmark has no usable destination. <see cref="PageNumber"/> is a
+    /// convenience shortcut for <c>Destination?.PageNumber</c>.
+    /// </summary>
+    public PdfDestination? Destination { get; init; }
+
     /// <summary>Nested child bookmarks.</summary>
     public IReadOnlyList<OutlineItem> Children { get; init; } = Array.Empty<OutlineItem>();
 }
@@ -76,13 +83,14 @@ internal sealed class OutlineBuilder
             }
 
             string title = (node.Get("Title") as PdfString)?.AsText() ?? "";
-            int? page = ResolvePage(node);
+            PdfDestination? dest = ResolveDestinationInfo(node);
             var children = BuildSiblings(node.GetRaw("First"), visited, depth + 1);
 
             items.Add(new OutlineItem
             {
                 Title = title.Trim(),
-                PageNumber = page,
+                PageNumber = dest?.PageNumber,
+                Destination = dest,
                 Children = children,
             });
 
@@ -91,7 +99,7 @@ internal sealed class OutlineBuilder
         return items;
     }
 
-    private int? ResolvePage(Dict node)
+    private PdfDestination? ResolveDestinationInfo(Dict node)
     {
         // A bookmark may carry an explicit /Dest or a GoTo action /A with /D.
         object? dest = node.Get("Dest");
@@ -103,7 +111,7 @@ internal sealed class OutlineBuilder
         return ResolveDestination(dest);
     }
 
-    private int? ResolveDestination(object? dest)
+    private PdfDestination? ResolveDestination(object? dest)
     {
         dest = _xref.FetchIfRef(dest);
 
@@ -126,17 +134,23 @@ internal sealed class OutlineBuilder
 
         if (dest is List<object?> arr && arr.Count > 0)
         {
-            object? target = arr[0];
-            if (target is Ref pageRef && _xref.Fetch(pageRef) is Dict pageDict
-                && _pageIndex.TryGetValue(pageDict, out int idx))
-            {
-                return idx + 1;
-            }
-            // Some destinations encode a 0-based page index directly.
-            if (target is double d)
-            {
-                return (int)d + 1;
-            }
+            int? page = ResolvePageOfTarget(arr[0]);
+            return PdfDestination.FromArray(page, arr, _xref);
+        }
+        return null;
+    }
+
+    private int? ResolvePageOfTarget(object? target)
+    {
+        if (target is Ref pageRef && _xref.Fetch(pageRef) is Dict pageDict
+            && _pageIndex.TryGetValue(pageDict, out int idx))
+        {
+            return idx + 1;
+        }
+        // Some destinations encode a 0-based page index directly.
+        if (target is double d)
+        {
+            return (int)d + 1;
         }
         return null;
     }

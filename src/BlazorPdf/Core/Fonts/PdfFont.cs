@@ -3,6 +3,7 @@
 // See NOTICE.
 
 using BlazorPdf.Core.Filters;
+using BlazorPdf.Core.Geometry;
 
 namespace BlazorPdf.Core.Fonts;
 
@@ -22,6 +23,13 @@ public sealed class PdfFont
     private readonly ToUnicodeCMap? _toUnicode;
     private readonly Func<int, double>? _standardWidth; // Core-14 fallback metrics
     private readonly string[]? _encoding;       // simple-font code -> glyph name
+    private double _glyphWidthScale = 1.0;      // maps raw widths to 1000-em (Type3)
+
+    /// <summary>Type3 glyph data (glyph procedures), when the font is a Type3 font.</summary>
+    public Type3FontData? Type3 { get; private set; }
+
+    /// <summary><c>true</c> for a Type3 font whose glyphs are content-stream procedures.</summary>
+    public bool IsType3 => Type3 is not null;
 
     /// <summary>The PostScript base font name, when available.</summary>
     public string BaseFont { get; }
@@ -73,9 +81,12 @@ public sealed class PdfFont
         string baseFont = (fontDict.Get("BaseFont") as Name)?.Value ?? "";
         ToUnicodeCMap? toUnicode = ReadToUnicode(fontDict);
 
-        PdfFont font = subtype == "Type0"
-            ? CreateType0(fontDict, xref, baseFont, toUnicode)
-            : CreateSimple(fontDict, baseFont, toUnicode);
+        PdfFont font = subtype switch
+        {
+            "Type0" => CreateType0(fontDict, xref, baseFont, toUnicode),
+            "Type3" => CreateType3(fontDict, xref, toUnicode),
+            _ => CreateSimple(fontDict, baseFont, toUnicode),
+        };
 
         // Locate the font descriptor (on the font, or its descendant for Type0).
         Dict? descriptor = fontDict.Get("FontDescriptor") as Dict;
@@ -233,6 +244,54 @@ public sealed class PdfFont
         return Encodings.WinAnsi;
     }
 
+    private static PdfFont CreateType3(Dict fontDict, IXRef xref, ToUnicodeCMap? toUnicode)
+    {
+        int firstChar = ToInt(fontDict.Get("FirstChar"), 0);
+        var widths = new List<double>();
+        if (fontDict.Get("Widths") is List<object?> widthArr)
+        {
+            foreach (var w in widthArr)
+            {
+                widths.Add(w is double d ? d : 0);
+            }
+        }
+
+        // Type3 glyphs live in glyph space; /FontMatrix maps them to text space.
+        Matrix fontMatrix = ReadFontMatrix(fontDict);
+        string[]? encoding = BuildSimpleEncoding(fontDict, "");
+
+        var font = new PdfFont(
+            isType0: false,
+            baseFont: "",
+            firstChar,
+            widths.ToArray(),
+            new Dictionary<int, double>(),
+            defaultWidth: 0,
+            toUnicode,
+            standardWidth: null,
+            encoding)
+        {
+            // Widths are in glyph space; scale them to the 1000-em text space the
+            // layout code expects (advance_text = width_glyph * fontMatrix.a).
+            _glyphWidthScale = fontMatrix.A * 1000.0,
+        };
+
+        Dict? charProcs = fontDict.Get("CharProcs") as Dict;
+        Dict? resources = fontDict.Get("Resources") as Dict;
+        font.Type3 = new Type3FontData(fontMatrix, charProcs, resources, encoding, xref);
+        return font;
+    }
+
+    private static Matrix ReadFontMatrix(Dict fontDict)
+    {
+        if (fontDict.Get("FontMatrix") is List<object?> m && m.Count >= 6)
+        {
+            return new Matrix(ToDouble(m[0], 0.001), ToDouble(m[1], 0), ToDouble(m[2], 0),
+                ToDouble(m[3], 0.001), ToDouble(m[4], 0), ToDouble(m[5], 0));
+        }
+        return new Matrix(0.001, 0, 0, 0.001, 0, 0);
+    }
+
     private static PdfFont CreateType0(Dict fontDict, IXRef xref, string baseFont, ToUnicodeCMap? toUnicode)
     {
         var cidWidths = new Dictionary<int, double>();
@@ -346,13 +405,13 @@ public sealed class PdfFont
         int index = code - _firstChar;
         if (index >= 0 && index < _widths.Length && _widths[index] != 0)
         {
-            return _widths[index];
+            return _widths[index] * _glyphWidthScale;
         }
         if (_widths.Length == 0 && _standardWidth is not null)
         {
             return _standardWidth(code);
         }
-        return _defaultWidth;
+        return _defaultWidth * _glyphWidthScale;
     }
 
     private string UnicodeFor(int code)
@@ -427,3 +486,52 @@ public sealed class PdfFont
     private static int ToInt(object? value, int fallback) => value is double d ? (int)d : fallback;
     private static double ToDouble(object? value, double fallback) => value is double d ? d : fallback;
 }
+
+/// <summary>
+/// The data needed to draw a Type3 font's glyphs: the font matrix (glyph space
+/// to text space), the <c>/CharProcs</c> content streams, the glyph resources,
+/// and the code-to-glyph-name encoding. Type3 glyphs are rendered by executing
+/// each glyph's content stream, unlike other fonts whose glyphs are drawn from
+/// outlines or substituted. Mirrors the Type3 handling in pdf.js evaluator.
+/// </summary>
+public sealed class Type3FontData
+{
+    private readonly Dict? _charProcs;
+    private readonly string[]? _encoding;
+    private readonly IXRef _xref;
+
+    /// <summary>The font matrix mapping glyph space to text space.</summary>
+    public Matrix FontMatrix { get; }
+
+    /// <summary>The glyph resource dictionary, if the font supplies one.</summary>
+    public Dict? Resources { get; }
+
+    internal Type3FontData(Matrix fontMatrix, Dict? charProcs, Dict? resources,
+        string[]? encoding, IXRef xref)
+    {
+        FontMatrix = fontMatrix;
+        _charProcs = charProcs;
+        Resources = resources;
+        _encoding = encoding;
+        _xref = xref;
+    }
+
+    /// <summary>
+    /// Returns the glyph procedure (a content stream) for a character code, or
+    /// <c>null</c> when the code has no glyph name or matching <c>/CharProcs</c> entry.
+    /// </summary>
+    public PdfStream? GetGlyphProcedure(int code)
+    {
+        if (_charProcs is null || _encoding is null || code is < 0 or > 255)
+        {
+            return null;
+        }
+        string name = _encoding[code];
+        if (string.IsNullOrEmpty(name))
+        {
+            return null;
+        }
+        return _xref.FetchIfRef(_charProcs.Get(name)) as PdfStream;
+    }
+}
+

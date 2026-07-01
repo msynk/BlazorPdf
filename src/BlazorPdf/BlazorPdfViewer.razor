@@ -3,6 +3,12 @@
 @using BlazorPdf.Core
 
 <div class="blazorpdf-viewer" style="height:@Height" @ref="_viewerRef">
+    @if (_loading)
+    {
+        <div class="blazorpdf-progress" role="progressbar" aria-label="Loading document">
+            <div class="blazorpdf-progress-bar"></div>
+        </div>
+    }
     @if (ShowToolbar)
     {
         <div class="blazorpdf-toolbar">
@@ -97,7 +103,12 @@
                 {
                     int pageNo = i + 1;
                     <div class="blazorpdf-thumb @(pageNo == _currentPage ? "active" : "")" @onclick="() => GoToPage(pageNo)">
-                        <div class="blazorpdf-thumb-svg" style="@ThumbStyle(i)">@_pages[i]</div>
+                        <div class="blazorpdf-thumb-svg" style="@ThumbStyle(i)">
+                            @if (_pages[i] is { } thumb)
+                            {
+                                @thumb
+                            }
+                        </div>
                         <span class="blazorpdf-thumb-label">@pageNo</span>
                     </div>
                 }
@@ -119,7 +130,14 @@
                     @for (int i = 0; i < _pages.Count; i++)
                     {
                         <div class="blazorpdf-page" data-page="@(i + 1)" style="@PageStyle(i)">
-                            @_pages[i]
+                            @if (_pages[i] is { } content)
+                            {
+                                @content
+                            }
+                            else
+                            {
+                                <div class="blazorpdf-page-placeholder"></div>
+                            }
                         </div>
                     }
                 </div>

@@ -24,7 +24,8 @@ real DOM, selection, find-in-page and accessibility work for free.
 **Rendering engine**
 - Parsing: cross-reference tables, xref streams, object streams, trailers, `/Prev` chains
 - Filters: Flate, LZW, ASCIIHex, ASCII85, RunLength, CCITT (G3/G4) with PNG/TIFF predictors
-- Fonts: simple and Type0/CID text; embedded TrueType/OpenType via `@font-face`;
+- Fonts: simple, Type0/CID and **Type3** text; embedded TrueType/OpenType via `@font-face`;
+  **Type3 glyphs rendered by executing their content-stream procedures**;
   Core-14 metrics; **base encodings (Standard/WinAnsi/MacRoman/Symbol/ZapfDingbats) + `/Differences`**;
   glyph-name → Unicode (Adobe Glyph List subset, Symbol Greek/math, ZapfDingbats,
   plus `uniXXXX`/`uXXXXXX`); ToUnicode CMaps
@@ -41,7 +42,8 @@ real DOM, selection, find-in-page and accessibility work for free.
 - Blend modes (`BM`) via CSS `mix-blend-mode`
 - Annotations: appearance-stream rendering and clickable URI links
 - Document: page tree with inherited **MediaBox/CropBox/Bleed/Trim/Art boxes** and
-  rotation; **bookmarks/outline** with resolved destinations; **document metadata**
+  rotation; **bookmarks/outline** with destinations resolved to a page plus
+  **view parameters (XYZ/Fit/FitH/FitR…)**; **document metadata**
   (`/Info` fields + parsed dates + raw XMP `/Metadata`); **page labels** (`/PageLabels`)
 - Security: standard handler decryption (RC4, AES-128/256, revisions 2–6, empty user password)
 
@@ -152,8 +154,9 @@ color spaces, fonts, rendering operators and outline resolution end-to-end.
 
 These degrade gracefully — affected pages still load:
 
-- **Bare CFF/Type1 and Type3 embedded fonts** render via substitute fonts with
-  correct Unicode rather than the embedded glyph outlines.
+- **Bare CFF/Type1 embedded fonts** render via substitute fonts with correct
+  Unicode rather than the embedded glyph outlines. (Type3 fonts now render from
+  their glyph procedures.)
 - **JBIG2 and JPEG2000** images are not decoded and are skipped.
 - **Mesh shadings (types 4–7), function-based shadings (type 1) and tiling
   patterns** fall back to a solid color.

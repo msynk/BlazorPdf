@@ -16,6 +16,47 @@ export function scrollToPage(container, pageNumber) {
     const target = container.querySelector(`[data-page='${pageNumber}']`);
     if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "start" });
+        // Render the destination immediately so jumps don't land on a placeholder.
+        scheduleRender(container, container.__bpfDotnet);
+    }
+}
+
+// Throttles render passes to one per animation frame.
+function scheduleRender(container, dotnetRef) {
+    if (!container || !dotnetRef || container.__bpfRenderScheduled) {
+        return;
+    }
+    container.__bpfRenderScheduled = true;
+    requestAnimationFrame(() => {
+        container.__bpfRenderScheduled = false;
+        renderVisiblePages(container, dotnetRef);
+    });
+}
+
+// Computes which pages intersect the viewport (expanded by a buffer) and asks
+// .NET to render any that are not rendered yet.
+function renderVisiblePages(container, dotnetRef) {
+    const pages = container.querySelectorAll("[data-page]");
+    if (!pages.length) {
+        return;
+    }
+    const rect = container.getBoundingClientRect();
+    const buffer = Math.max(container.clientHeight * 1.5, 800);
+    const lo = rect.top - buffer;
+    const hi = rect.bottom + buffer;
+
+    const needed = [];
+    for (const page of pages) {
+        const r = page.getBoundingClientRect();
+        if (r.bottom >= lo && r.top <= hi) {
+            const n = parseInt(page.getAttribute("data-page"), 10);
+            if (!Number.isNaN(n)) {
+                needed.push(n);
+            }
+        }
+    }
+    if (needed.length) {
+        dotnetRef.invokeMethodAsync("EnsurePagesRendered", needed);
     }
 }
 
@@ -24,6 +65,7 @@ export function registerScrollSpy(container, dotnetRef) {
         return;
     }
     disposeScrollSpy(container);
+    container.__bpfDotnet = dotnetRef;
 
     const ratios = new Map();
     const observer = new IntersectionObserver(
@@ -52,10 +94,23 @@ export function registerScrollSpy(container, dotnetRef) {
     container.querySelectorAll("[data-page]").forEach((p) => observer.observe(p));
     container.__bpfObserver = observer;
 
+    // Lazy rendering: on every scroll (throttled to animation frames) work out
+    // which pages fall within the viewport plus a generous buffer and ask .NET
+    // to render any that are still placeholders. This fills the surface ahead of
+    // the user like the browser's built-in viewer, instead of rendering the whole
+    // document up front. A geometry check is used (rather than a second
+    // IntersectionObserver with rootMargin) because it fires reliably on every
+    // scroll for an element scroll-container.
+    const onScroll = () => scheduleRender(container, dotnetRef);
+    container.addEventListener("scroll", onScroll, { passive: true });
+    container.__bpfScroll = onScroll;
+    scheduleRender(container, dotnetRef); // initial fill
+
     // Notify .NET when the container resizes (used for fit-to-width/page).
     if (typeof ResizeObserver !== "undefined") {
         const resize = new ResizeObserver(() => {
             dotnetRef.invokeMethodAsync("OnViewportResized");
+            scheduleRender(container, dotnetRef);
         });
         resize.observe(container);
         container.__bpfResize = resize;
@@ -71,6 +126,11 @@ export function disposeScrollSpy(container) {
         container.__bpfObserver.disconnect();
         container.__bpfObserver = null;
     }
+    if (container.__bpfScroll) {
+        container.removeEventListener("scroll", container.__bpfScroll);
+        container.__bpfScroll = null;
+    }
+    container.__bpfDotnet = null;
     if (container.__bpfResize) {
         container.__bpfResize.disconnect();
         container.__bpfResize = null;

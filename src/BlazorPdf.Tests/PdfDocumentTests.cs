@@ -44,6 +44,41 @@ public class PdfDocumentTests
     }
 
     [Fact]
+    public void Outline_destination_carries_view_parameters()
+    {
+        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var dest = doc.Outline[0].Destination;
+
+        Assert.NotNull(dest);
+        Assert.Equal(1, dest!.PageNumber);
+        Assert.Equal(DestinationFit.XYZ, dest.Fit);   // [3 0 R /XYZ 0 200 0]
+        Assert.Equal(0, dest.Left);
+        Assert.Equal(200, dest.Top);
+    }
+
+    [Fact]
+    public void Fit_destinations_are_parsed()
+    {
+        var bodies = new List<string>
+        {
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+            "<< /Type /Outlines /First 5 0 R /Last 5 0 R /Count 1 >>",
+            "<< /Title (Fit rect) /Parent 4 0 R /Dest [3 0 R /FitR 10 20 190 180] >>",
+        };
+        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var dest = doc.Outline[0].Destination;
+
+        Assert.NotNull(dest);
+        Assert.Equal(DestinationFit.FitR, dest!.Fit);
+        Assert.Equal(10, dest.Left);
+        Assert.Equal(20, dest.Bottom);
+        Assert.Equal(190, dest.Right);
+        Assert.Equal(180, dest.Top);
+    }
+
+    [Fact]
     public void Document_without_outline_is_empty()
     {
         var bodies = new List<string>

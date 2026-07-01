@@ -17,8 +17,11 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private PdfSource? _source;
     private PdfDocument? _document;
     private string _status = "Idle.";
+    private bool _loading;
 
-    private readonly List<MarkupString> _pages = new();
+    // One slot per page. A null slot is a not-yet-rendered page shown as a
+    // light placeholder; it is rendered on demand when it nears the viewport.
+    private readonly List<MarkupString?> _pages = new();
     private readonly List<double> _pageWidths = new();  // points, display orientation
     private readonly List<double> _pageHeights = new();
 
@@ -124,10 +127,17 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             return;
         }
 
+        // Show the progress bar and let it paint before the synchronous parse
+        // work begins. The bar animates on the compositor so it keeps moving
+        // even while the WASM thread is busy parsing.
+        _loading = true;
+        StateHasChanged();
+        await Task.Yield();
+
         try
         {
             _document = PdfDocument.Load(_source.Bytes);
-            RenderPages();
+            PreparePages();
             try
             {
                 _outline = _document.Outline;
@@ -145,9 +155,19 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             _status = $"Error: {ex.Message}";
             await OnError.InvokeAsync(ex.Message);
         }
+        finally
+        {
+            _loading = false;
+        }
     }
 
-    private void RenderPages()
+    /// <summary>
+    /// Measures every page (cheap) and creates an empty render slot for each so
+    /// the document surface, scrollbar and page count are correct immediately.
+    /// Only a small window around the current page is rendered up front; the
+    /// rest are rendered on demand as they approach the viewport.
+    /// </summary>
+    private void PreparePages()
     {
         _pages.Clear();
         _pageWidths.Clear();
@@ -160,10 +180,87 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         bool swap = _rotation % 180 == 90;
         foreach (var page in _document.Pages)
         {
-            string html = new Core.Render.HtmlRenderer(page, _document.XRef, _rotation).Render();
-            _pages.Add(new MarkupString(html));
+            _pages.Add(null);
             _pageWidths.Add(swap ? page.Height : page.Width);
             _pageHeights.Add(swap ? page.Width : page.Height);
+        }
+
+        // Eagerly render a small window around the current page so something is
+        // visible instantly (page 1 on load, or the viewed page after rotation).
+        int center = Math.Clamp(_currentPage - 1, 0, _pages.Count - 1);
+        for (int i = Math.Max(0, center - 1); i <= Math.Min(_pages.Count - 1, center + 1); i++)
+        {
+            _pages[i] = RenderPageContent(i);
+        }
+    }
+
+    /// <summary>Renders a single page to its HTML fragment.</summary>
+    private MarkupString RenderPageContent(int index)
+    {
+        var page = _document!.Pages[index];
+        string html = new Core.Render.HtmlRenderer(page, _document.XRef, _rotation).Render();
+        return new MarkupString(html);
+    }
+
+    /// <summary>
+    /// Invoked from JavaScript as pages approach the viewport. Renders any of
+    /// the requested pages that have not been rendered yet.
+    /// </summary>
+    [JSInvokable]
+    public void EnsurePagesRendered(int[] pageNumbers)
+    {
+        if (_document is null || pageNumbers is null)
+        {
+            return;
+        }
+
+        bool changed = false;
+        foreach (int n in pageNumbers)
+        {
+            int idx = n - 1;
+            if (idx >= 0 && idx < _pages.Count && _pages[idx] is null)
+            {
+                _pages[idx] = RenderPageContent(idx);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Renders every page that is still a placeholder. Used before a full-text
+    /// search so matches on not-yet-viewed pages are found.
+    /// </summary>
+    private async Task RenderAllPagesAsync()
+    {
+        if (_document is null)
+        {
+            return;
+        }
+
+        bool any = false;
+        for (int i = 0; i < _pages.Count; i++)
+        {
+            if (_pages[i] is null)
+            {
+                _pages[i] = RenderPageContent(i);
+                any = true;
+                if (i % 4 == 0)
+                {
+                    StateHasChanged();
+                    await Task.Yield();
+                }
+            }
+        }
+
+        if (any)
+        {
+            StateHasChanged();
+            await Task.Yield();
         }
     }
 
@@ -271,7 +368,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private async Task RotateClockwise()
     {
         _rotation = (_rotation + 90) % 360;
-        RenderPages();
+        PreparePages();
         _spyPending = true;
         await Task.CompletedTask;
     }
@@ -381,6 +478,20 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             await ClearSearchAsync();
             return;
+        }
+
+        // Full-text search reads the rendered DOM, so ensure every page is
+        // rendered first. Show the progress bar while catching up.
+        bool needsRender = _pages.Any(p => p is null);
+        if (needsRender)
+        {
+            _loading = true;
+            StateHasChanged();
+            await Task.Yield();
+            await RenderAllPagesAsync();
+            _loading = false;
+            StateHasChanged();
+            await Task.Yield();
         }
 
         _searchTotal = await _module.InvokeAsync<int>("searchAll", _containerRef, _searchQuery);
