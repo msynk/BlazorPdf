@@ -47,6 +47,27 @@ public readonly struct Matrix
     public (double X, double Y) ApplyDirection(double dx, double dy)
         => (A * dx + C * dy, B * dx + D * dy);
 
+    /// <summary>
+    /// Returns the inverse transform, or <c>null</c> when this matrix is
+    /// singular (non-invertible).
+    /// </summary>
+    public Matrix? Invert()
+    {
+        double det = A * D - B * C;
+        if (Math.Abs(det) < 1e-12)
+        {
+            return null;
+        }
+        double inv = 1.0 / det;
+        double a = D * inv;
+        double b = -B * inv;
+        double c = -C * inv;
+        double d = A * inv;
+        double e = -(a * E + c * F);
+        double f = -(b * E + d * F);
+        return new Matrix(a, b, c, d, e, f);
+    }
+
     /// <summary>An approximate uniform scale factor (used for line widths and font sizes).</summary>
     public double ScaleFactor
     {

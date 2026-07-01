@@ -35,10 +35,11 @@ real DOM, selection, find-in-page and accessibility work for free.
   through the actual current space
 - Functions: sampled (type 0, **multi-dimensional input**), exponential (2),
   stitching (3), PostScript calculator (4)
-- Paths: fills (nonzero/even-odd), clipping (`W`/`W*`), strokes, **dash patterns (`d`)**,
-  line cap/join tracking
+- Paths: fills (nonzero/even-odd), clipping (`W`/`W*`), **strokes as real SVG paths**
+  (smooth Béziers, **dash patterns (`d`)**, line caps/joins)
 - Images: RGB/Gray/CMYK/Indexed/Separation, JPEG passthrough, CCITT fax, image masks, soft masks
-- Shadings: axial (type 2) and radial (type 3) as CSS gradients; shading-pattern fills
+- Shadings: axial (type 2) and radial (type 3) as CSS gradients; shading-pattern fills;
+  **tiling patterns (type 1)** replayed as clipped cells across the fill
 - Blend modes (`BM`) via CSS `mix-blend-mode`
 - Annotations: appearance-stream rendering and clickable URI links
 - Document: page tree with inherited **MediaBox/CropBox/Bleed/Trim/Art boxes** and
@@ -158,11 +159,10 @@ These degrade gracefully — affected pages still load:
   Unicode rather than the embedded glyph outlines. (Type3 fonts now render from
   their glyph procedures.)
 - **JBIG2 and JPEG2000** images are not decoded and are skipped.
-- **Mesh shadings (types 4–7), function-based shadings (type 1) and tiling
-  patterns** fall back to a solid color.
+- **Mesh shadings (types 4–7) and function-based shadings (type 1)** fall back to
+  a solid color.
 - **Password-protected documents** (non-empty user password) cannot be opened;
   the standard-handler crypto also requires a non-WASM host.
-- Strokes are approximated by filled outlines (caps/joins are not pixel-exact).
 
 ## Contributing
 

@@ -349,20 +349,23 @@ public sealed class HtmlRenderer
 
         if (fill)
         {
-            string fillPaint = _state.FillPattern is not null
-                ? ResolveFillPaint(_state.FillPattern) ?? _state.FillColor
-                : _state.FillColor;
-            EmitFill(data, evenOdd, fillPaint, _state.FillAlpha);
+            if (_state.FillPattern is not null && TryRenderTilingFill(data, evenOdd))
+            {
+                // Tiling pattern painted its cells into a clipped group.
+            }
+            else
+            {
+                string fillPaint = _state.FillPattern is not null
+                    ? ResolveFillPaint(_state.FillPattern) ?? _state.FillColor
+                    : _state.FillColor;
+                EmitFill(data, evenOdd, fillPaint, _state.FillAlpha);
+            }
         }
 
         if (stroke)
         {
-            double deviceWidth = Math.Max(0.5, _state.LineWidth * _state.Ctm.ScaleFactor);
-            string? outline = BuildStrokeOutline(deviceWidth);
-            if (outline is not null)
-            {
-                EmitFill(outline, false, _state.StrokeColor, _state.StrokeAlpha);
-            }
+            double deviceWidth = Math.Max(0.75, _state.LineWidth * _state.Ctm.ScaleFactor);
+            EmitStroke(data, deviceWidth);
         }
 
         ApplyPendingClip(data);
@@ -391,136 +394,64 @@ public sealed class HtmlRenderer
     }
 
     /// <summary>
-    /// Builds a fill path that approximates stroking <see cref="_subpaths"/> at
-    /// the given device width: a quad per segment plus a small square at each
-    /// vertex to cover joins and caps. Filled with nonzero winding.
+    /// Strokes the current path by emitting an inline SVG <c>&lt;path&gt;</c>.
+    /// The path data preserves the original cubic Béziers (the <c>C</c> commands
+    /// built by <see cref="CurveTo"/>), so the browser draws true smooth curves
+    /// with correct caps and joins instead of a flattened polygonal outline.
     /// </summary>
-    private string? BuildStrokeOutline(double width)
+    private void EmitStroke(string pathData, double deviceWidth)
     {
-        double hw = Math.Max(width / 2.0, 0.35);
-        var sb = new StringBuilder();
-        bool any = false;
-        bool dashed = _state.DashArray is { Length: > 0 };
-
-        foreach (var sub in _subpaths)
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $"<svg width=\"{_viewW:0.##}\" height=\"{_viewH:0.##}\" viewBox=\"0 0 {_viewW:0.##} {_viewH:0.##}\" style=\"position:absolute;left:0;top:0;overflow:visible;pointer-events:none"));
+        if (_state.BlendMode.Length > 0)
         {
-            if (sub.Count == 1)
+            _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+        }
+        _html.Append("\"><path d=\"").Append(pathData).Append("\" fill=\"none\" stroke=\"");
+        _html.Append(_state.StrokeColor).Append('"');
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $" stroke-width=\"{deviceWidth:0.###}\""));
+        _html.Append(" stroke-linecap=\"").Append(LineCapName(_state.LineCap)).Append('"');
+        _html.Append(" stroke-linejoin=\"").Append(LineJoinName(_state.LineJoin)).Append('"');
+        if (_state.StrokeAlpha < 1)
+        {
+            _html.Append(string.Create(CultureInfo.InvariantCulture,
+                $" stroke-opacity=\"{_state.StrokeAlpha:0.###}\""));
+        }
+        if (_state.DashArray is { Length: > 0 } dash)
+        {
+            _html.Append(" stroke-dasharray=\"");
+            for (int i = 0; i < dash.Length; i++)
             {
-                // Lone moveto with a dot cap (rare).
-                AppendSquare(sb, sub[0].X, sub[0].Y, hw);
-                any = true;
-                continue;
-            }
-
-            if (dashed)
-            {
-                any |= AppendDashedSubpath(sb, sub, hw);
-                continue;
-            }
-
-            for (int i = 0; i + 1 < sub.Count; i++)
-            {
-                var (x0, y0) = sub[i];
-                var (x1, y1) = sub[i + 1];
-                double dx = x1 - x0, dy = y1 - y0;
-                double len = Math.Sqrt(dx * dx + dy * dy);
-                if (len < 1e-6)
+                if (i > 0)
                 {
-                    continue;
+                    _html.Append(',');
                 }
-                double nx = -dy / len * hw, ny = dx / len * hw;
-                sb.Append(string.Create(CultureInfo.InvariantCulture,
-                    $"M{x0 + nx:0.##} {y0 + ny:0.##} L{x1 + nx:0.##} {y1 + ny:0.##} L{x1 - nx:0.##} {y1 - ny:0.##} L{x0 - nx:0.##} {y0 - ny:0.##} Z "));
-                any = true;
+                _html.Append(string.Create(CultureInfo.InvariantCulture, $"{Math.Max(0, dash[i]):0.###}"));
             }
-            // Cover joins/caps with squares at each vertex.
-            foreach (var (vx, vy) in sub)
+            _html.Append('"');
+            if (_state.DashPhase != 0)
             {
-                AppendSquare(sb, vx, vy, hw);
+                _html.Append(string.Create(CultureInfo.InvariantCulture,
+                    $" stroke-dashoffset=\"{_state.DashPhase:0.###}\""));
             }
         }
-
-        return any ? sb.ToString().Trim() : null;
+        _html.Append("/></svg>");
     }
 
-    /// <summary>
-    /// Emits stroke quads for a single subpath broken up by the current dash
-    /// pattern (<see cref="GraphicsState.DashArray"/>), advancing a cycle cursor
-    /// across all segments so dashes are continuous across vertices.
-    /// </summary>
-    private bool AppendDashedSubpath(StringBuilder sb, List<(double X, double Y)> sub, double hw)
+    private static string LineCapName(int cap) => cap switch
     {
-        double[] dash = _state.DashArray!;
-        double cycle = dash.Sum();
-        if (cycle <= 0)
-        {
-            return false;
-        }
+        1 => "round",
+        2 => "square",
+        _ => "butt",
+    };
 
-        // Position within the dash cycle, honoring the initial phase.
-        double remaining = dash[0];
-        int dashIndex = 0;
-        bool on = true;
-        double phase = _state.DashPhase % cycle;
-        while (phase > 0)
-        {
-            if (phase >= remaining)
-            {
-                phase -= remaining;
-                dashIndex = (dashIndex + 1) % dash.Length;
-                remaining = dash[dashIndex];
-                on = !on;
-            }
-            else
-            {
-                remaining -= phase;
-                phase = 0;
-            }
-        }
-
-        bool any = false;
-        for (int i = 0; i + 1 < sub.Count; i++)
-        {
-            var (x0, y0) = sub[i];
-            var (x1, y1) = sub[i + 1];
-            double dx = x1 - x0, dy = y1 - y0;
-            double segLen = Math.Sqrt(dx * dx + dy * dy);
-            if (segLen < 1e-6)
-            {
-                continue;
-            }
-            double ux = dx / segLen, uy = dy / segLen;
-            double nx = -uy * hw, ny = ux * hw;
-            double pos = 0;
-            while (pos < segLen)
-            {
-                double step = Math.Min(remaining, segLen - pos);
-                if (on && step > 1e-6)
-                {
-                    double ax = x0 + ux * pos, ay = y0 + uy * pos;
-                    double bx = x0 + ux * (pos + step), by = y0 + uy * (pos + step);
-                    sb.Append(string.Create(CultureInfo.InvariantCulture,
-                        $"M{ax + nx:0.##} {ay + ny:0.##} L{bx + nx:0.##} {by + ny:0.##} L{bx - nx:0.##} {by - ny:0.##} L{ax - nx:0.##} {ay - ny:0.##} Z "));
-                    any = true;
-                }
-                pos += step;
-                remaining -= step;
-                if (remaining <= 1e-9)
-                {
-                    dashIndex = (dashIndex + 1) % dash.Length;
-                    remaining = dash[dashIndex];
-                    on = !on;
-                }
-            }
-        }
-        return any;
-    }
-
-    private static void AppendSquare(StringBuilder sb, double cx, double cy, double hw)
+    private static string LineJoinName(int join) => join switch
     {
-        sb.Append(string.Create(CultureInfo.InvariantCulture,
-            $"M{cx - hw:0.##} {cy - hw:0.##} L{cx + hw:0.##} {cy - hw:0.##} L{cx + hw:0.##} {cy + hw:0.##} L{cx - hw:0.##} {cy + hw:0.##} Z "));
-    }
+        1 => "round",
+        2 => "bevel",
+        _ => "miter",
+    };
 
     private void EndPathNoPaint()
     {
@@ -1145,6 +1076,14 @@ public sealed class HtmlRenderer
         if (op.Operands.Count > 0 && op.Operands[^1] is Name pattern)
         {
             _state.FillPattern = pattern.Value;
+            // Uncolored (PaintType 2) patterns carry their paint color in the
+            // leading numeric operands; keep it as the current fill color so the
+            // cell content (which sets no color of its own) paints with it.
+            string? color = ColorViaSpace(_state.FillColorSpace, op);
+            if (color is not null)
+            {
+                _state.FillColor = color;
+            }
         }
         else
         {
@@ -1247,8 +1186,7 @@ public sealed class HtmlRenderer
         return result;
     }
 
-    private string? BuildPattern(string name)
-    {
+    private string? BuildPattern(string name)    {
         if (_resources?.Get("Pattern") is not Dict patterns)
         {
             return null;
@@ -1279,6 +1217,173 @@ public sealed class HtmlRenderer
                 Matrix.Concat(_baseMatrix, matrix), _viewW, _viewH);
         }
         return null;
+    }
+
+    // Maximum number of pattern cells to emit for a single tiling fill; beyond
+    // this the fill degrades to a solid color to bound the generated DOM.
+    private const int MaxTiles = 4000;
+
+    /// <summary>
+    /// Renders a tiling pattern (PatternType 1) fill: the pattern cell's content
+    /// stream is replayed across an XStep/YStep grid that covers the fill path's
+    /// bounding box, all clipped to the fill path. Returns <c>false</c> (so the
+    /// caller can fall back to a solid fill) when the pattern is not tiling or
+    /// would require too many cells.
+    /// </summary>
+    private bool TryRenderTilingFill(string clipData, bool evenOdd)
+    {
+        if (_resources?.Get("Pattern") is not Dict patterns
+            || patterns.Get(_state.FillPattern!) is not PdfStream patStream
+            || patStream.Dict is null)
+        {
+            return false;
+        }
+
+        Dict pd = patStream.Dict;
+        if ((pd.Get("PatternType") is double pt ? (int)pt : 0) != 1)
+        {
+            return false;
+        }
+
+        double xStep = Num(pd.Get("XStep"));
+        double yStep = Num(pd.Get("YStep"));
+        if (Math.Abs(xStep) < 1e-6 || Math.Abs(yStep) < 1e-6)
+        {
+            return false;
+        }
+
+        Matrix patternMatrix = pd.Get("Matrix") is List<object?> m && m.Count >= 6
+            ? new Matrix(Num(m[0]), Num(m[1]), Num(m[2]), Num(m[3]), Num(m[4]), Num(m[5]))
+            : Matrix.Identity;
+        Matrix patToDevice = Matrix.Concat(_baseMatrix, patternMatrix);
+        if (patToDevice.Invert() is not Matrix inv)
+        {
+            return false;
+        }
+
+        // Device-space bounding box of the fill region.
+        if (!TryPathBounds(out double dMinX, out double dMinY, out double dMaxX, out double dMaxY))
+        {
+            return false;
+        }
+
+        // Map the device bbox corners into pattern space to find the cell range.
+        double pMinX = double.MaxValue, pMinY = double.MaxValue;
+        double pMaxX = double.MinValue, pMaxY = double.MinValue;
+        foreach (var (dx, dy) in new[] { (dMinX, dMinY), (dMaxX, dMinY), (dMaxX, dMaxY), (dMinX, dMaxY) })
+        {
+            var (px, py) = inv.Apply(dx, dy);
+            pMinX = Math.Min(pMinX, px); pMaxX = Math.Max(pMaxX, px);
+            pMinY = Math.Min(pMinY, py); pMaxY = Math.Max(pMaxY, py);
+        }
+
+        (int iStart, int iEnd) = CellRange(pMinX, pMaxX, xStep);
+        (int jStart, int jEnd) = CellRange(pMinY, pMaxY, yStep);
+        long tileCount = (long)(iEnd - iStart + 1) * (jEnd - jStart + 1);
+        if (tileCount is <= 0 or > MaxTiles)
+        {
+            return false;
+        }
+
+        double[] bbox = pd.Get("BBox") is List<object?> bb && bb.Count >= 4
+            ? [Num(bb[0]), Num(bb[1]), Num(bb[2]), Num(bb[3])]
+            : [0, 0, xStep, yStep];
+        Dict? patRes = pd.Get("Resources") as Dict;
+
+        // Clip the whole tiled group to the fill path.
+        _html.Append("<div style=\"position:absolute;inset:0;clip-path:path(");
+        if (evenOdd)
+        {
+            _html.Append("evenodd,");
+        }
+        _html.Append('\'').Append(clipData).Append("')\">");
+
+        for (int j = jStart; j <= jEnd; j++)
+        {
+            for (int i = iStart; i <= iEnd; i++)
+            {
+                Matrix cellCtm = Matrix.Concat(patToDevice, new Matrix(1, 0, 0, 1, i * xStep, j * yStep));
+                RunPatternCell(patStream, cellCtm, patRes, bbox);
+            }
+        }
+
+        _html.Append("</div>");
+        return true;
+    }
+
+    private static (int, int) CellRange(double min, double max, double step)
+    {
+        double lo = Math.Min(min / step, max / step);
+        double hi = Math.Max(min / step, max / step);
+        return ((int)Math.Floor(lo) - 1, (int)Math.Ceiling(hi) + 1);
+    }
+
+    private bool TryPathBounds(out double minX, out double minY, out double maxX, out double maxY)
+    {
+        minX = minY = double.MaxValue;
+        maxX = maxY = double.MinValue;
+        bool any = false;
+        foreach (var sub in _subpaths)
+        {
+            foreach (var (x, y) in sub)
+            {
+                minX = Math.Min(minX, x); maxX = Math.Max(maxX, x);
+                minY = Math.Min(minY, y); maxY = Math.Max(maxY, y);
+                any = true;
+            }
+        }
+        return any;
+    }
+
+    /// <summary>Replays a single tiling-pattern cell at <paramref name="cellCtm"/>, clipped to its BBox.</summary>
+    private void RunPatternCell(PdfStream patStream, Matrix cellCtm, Dict? patRes, double[] bbox)
+    {
+        if (_formDepth >= MaxFormDepth)
+        {
+            return;
+        }
+        _formDepth++;
+
+        // Clip the cell to its BBox (transformed to device space) so content does
+        // not bleed past the tile when XStep/YStep are smaller than the BBox.
+        var (c0x, c0y) = cellCtm.Apply(bbox[0], bbox[1]);
+        var (c1x, c1y) = cellCtm.Apply(bbox[2], bbox[1]);
+        var (c2x, c2y) = cellCtm.Apply(bbox[2], bbox[3]);
+        var (c3x, c3y) = cellCtm.Apply(bbox[0], bbox[3]);
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $"<div style=\"position:absolute;inset:0;clip-path:path('M{c0x:0.##} {c0y:0.##} L{c1x:0.##} {c1y:0.##} L{c2x:0.##} {c2y:0.##} L{c3x:0.##} {c3y:0.##} Z')\">"));
+
+        _stack.Push(_state.Clone());
+        _groupDepthStack.Push(_openGroups);
+        Dict? savedResources = _resources;
+
+        _state.Ctm = cellCtm;
+        _resources = patRes ?? _resources;
+
+        try
+        {
+            byte[] content = Filters.StreamDecoder.Decode(patStream);
+            RunOps(new ContentParser(content).Parse());
+        }
+        catch
+        {
+            // Ignore malformed pattern content.
+        }
+
+        _resources = savedResources;
+        if (_stack.Count > 0)
+        {
+            _state = _stack.Pop();
+            int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
+            while (_openGroups > target)
+            {
+                _html.Append("</div>");
+                _openGroups--;
+            }
+        }
+        _formDepth--;
+
+        _html.Append("</div>");
     }
 
     private static string BlendCss(string pdfMode) => pdfMode switch

@@ -42,21 +42,31 @@ public class RenderOperatorTests
     public void Stroked_path_emits_outline()
     {
         string html = Render("0 0 1 RG 5 w 10 10 m 200 200 l S");
-        Assert.Contains("rgb(0,0,255)", html);
-        Assert.Contains("clip-path:path", html);
+        // Strokes are drawn as an inline SVG path so curves stay smooth.
+        Assert.Contains("<svg", html);
+        Assert.Contains("<path", html);
+        Assert.Contains("stroke=\"rgb(0,0,255)\"", html);
+        Assert.Contains("stroke-width=\"5\"", html);
     }
 
     [Fact]
-    public void Dashed_stroke_is_broken_into_segments()
+    public void Curved_stroke_preserves_bezier_commands()
     {
-        // A long horizontal dashed line should yield multiple separate quads.
+        // The cubic Bezier 'c' operator should survive into the SVG path data
+        // rather than being flattened into many line segments.
+        string html = Render("2 w 10 10 m 50 200 150 200 200 10 c S");
+        Assert.Contains("<path", html);
+        Assert.Contains("C", html); // a cubic segment is present in the path data
+    }
+
+    [Fact]
+    public void Dashed_stroke_uses_dash_array()
+    {
         string solid = Render("2 w 0 100 m 300 100 l S");
         string dashed = Render("2 w [10 10] 0 d 0 100 m 300 100 l S");
 
-        int solidQuads = CountMoves(solid);
-        int dashedQuads = CountMoves(dashed);
-        Assert.True(dashedQuads > solidQuads,
-            $"dashed ({dashedQuads}) should have more sub-paths than solid ({solidQuads})");
+        Assert.DoesNotContain("stroke-dasharray", solid);
+        Assert.Contains("stroke-dasharray", dashed);
     }
 
     [Fact]
@@ -81,17 +91,5 @@ public class RenderOperatorTests
         var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
         Assert.Contains("rgb(255,0,0)", html);
-    }
-
-    private static int CountMoves(string html)
-    {
-        int count = 0;
-        int idx = 0;
-        while ((idx = html.IndexOf('M', idx)) != -1)
-        {
-            count++;
-            idx++;
-        }
-        return count;
     }
 }
