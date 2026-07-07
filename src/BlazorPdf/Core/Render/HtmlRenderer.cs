@@ -1,9 +1,7 @@
-// Clean-room C# renderer inspired by the pdf.js display layer
-// (`src/display/canvas.js` for the operator walk and `src/core/evaluator.js`
-// for content evaluation). Unlike the SVG backend, this emits plain HTML DOM:
+// HTML renderer. Unlike the SVG backend, this emits plain HTML DOM:
 // <div> with CSS `clip-path: path()` for vector fills and clips, filled <div>
 // outlines for strokes, <img> for rasters, <span> for selectable text and CSS
-// gradients for shadings. See NOTICE.
+// gradients for shadings.
 
 using System.Globalization;
 using System.Text;

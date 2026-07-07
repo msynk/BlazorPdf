@@ -1,6 +1,5 @@
-// Clean-room C# implementation of the LZWDecode filter, following the variable
-// width LZW scheme described in the PDF specification and pdf.js
-// `src/core/lzw_stream.js`. See NOTICE.
+// C# implementation of the LZWDecode filter, following the variable width LZW
+// scheme described in the PDF specification.
 
 namespace BlazorPdf.Core.Filters;
 

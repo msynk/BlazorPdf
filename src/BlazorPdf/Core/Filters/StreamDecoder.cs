@@ -1,5 +1,4 @@
-// Clean-room C# port of the filter pipeline from pdf.js `src/core/parser.js`
-// (`Parser.filter` / decode-stream factories). See NOTICE.
+// The stream filter pipeline: decode-stream factories.
 
 using System.IO.Compression;
 

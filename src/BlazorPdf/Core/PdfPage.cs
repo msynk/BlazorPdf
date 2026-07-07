@@ -1,4 +1,4 @@
-// Clean-room C# port of the page model from pdf.js `src/core/page.js`. See NOTICE.
+// The page model: inherited attributes, boxes, rotation and content streams.
 
 using BlazorPdf.Core.Filters;
 

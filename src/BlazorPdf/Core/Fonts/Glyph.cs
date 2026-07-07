@@ -1,5 +1,3 @@
-// Part of the clean-room pdf.js port. See NOTICE.
-
 namespace BlazorPdf.Core.Fonts;
 
 /// <summary>

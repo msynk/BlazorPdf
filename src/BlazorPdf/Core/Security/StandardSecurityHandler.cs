@@ -1,7 +1,7 @@
-// Clean-room C# implementation of the PDF standard security handler, following
-// the algorithms in the PDF specification (ISO 32000, §7.6) as also implemented
-// by pdf.js `src/core/crypto.js`. Supports empty-user-password decryption for
-// revisions 2–6 (RC4, AESV2/AES-128, AESV3/AES-256). See NOTICE.
+// C# implementation of the PDF standard security handler, following the
+// algorithms in the PDF specification (ISO 32000, §7.6). Supports
+// empty-user-password decryption for revisions 2–6 (RC4, AESV2/AES-128,
+// AESV3/AES-256).
 
 using System.Security.Cryptography;
 

@@ -1,5 +1,4 @@
-// Clean-room C# port of color-space handling from pdf.js `src/core/colorspace.js`
-// (the device, ICC-by-component, indexed and separation cases). See NOTICE.
+// Color-space handling: the device, ICC-by-component, indexed and separation cases.
 
 using BlazorPdf.Core.Filters;
 using BlazorPdf.Core.Functions;

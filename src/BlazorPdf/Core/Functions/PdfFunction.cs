@@ -1,5 +1,4 @@
-// Clean-room C# port of PDF function evaluation from pdf.js
-// `src/core/function.js` (Types 0, 2, 3, 4). See NOTICE.
+// PDF function evaluation (Types 0, 2, 3, 4).
 
 using BlazorPdf.Core.Filters;
 

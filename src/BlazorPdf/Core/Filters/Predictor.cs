@@ -1,6 +1,5 @@
-// Clean-room C# implementation of the PNG/TIFF predictors used by
-// FlateDecode / LZWDecode, following pdf.js `src/core/predictor_stream.js`
-// and the PDF specification. See NOTICE.
+// C# implementation of the PNG/TIFF predictors used by FlateDecode /
+// LZWDecode, following the PDF specification.
 
 namespace BlazorPdf.Core.Filters;
 

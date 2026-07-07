@@ -1,6 +1,4 @@
-// Document information dictionary (/Info) and XMP metadata reading, a
-// clean-room C# port of the metadata handling in pdf.js `src/core/document.js`
-// (getMetadata / DocumentInfo) and `src/core/metadata.js`. See NOTICE.
+// Document information dictionary (/Info) and XMP metadata reading.
 
 using System.Globalization;
 

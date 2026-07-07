@@ -1,5 +1,4 @@
-// Clean-room C# port of pdf.js `src/core/primitives.js`.
-// Original: Copyright (c) Mozilla Foundation, Apache-2.0. See NOTICE.
+// Core PDF object primitives: names, commands, references and dictionaries.
 
 using System.Collections.Concurrent;
 
@@ -8,7 +7,7 @@ namespace BlazorPdf.Core;
 /// <summary>
 /// Resolves indirect references (<see cref="Ref"/>) into concrete PDF objects.
 /// Implemented by the cross-reference table reader. Defined here so that
-/// <see cref="Dict"/> can resolve references lazily, exactly as pdf.js does.
+/// <see cref="Dict"/> can resolve references lazily.
 /// </summary>
 public interface IXRef
 {
@@ -21,7 +20,7 @@ public interface IXRef
 
 /// <summary>
 /// A PDF name object (e.g. <c>/Type</c>). Instances are interned so that name
-/// equality can be checked by reference, mirroring pdf.js's <c>Name.get</c> cache.
+/// equality can be checked by reference.
 /// </summary>
 public sealed class Name
 {
@@ -97,7 +96,7 @@ public readonly struct Ref : IEquatable<Ref>
 /// <summary>
 /// A PDF dictionary. Keys are name strings (without the leading slash); values
 /// are PDF objects. When an <see cref="IXRef"/> is attached, <see cref="Get(string)"/>
-/// transparently resolves indirect references, matching pdf.js behaviour.
+/// transparently resolves indirect references.
 /// </summary>
 public sealed class Dict
 {
@@ -137,7 +136,7 @@ public sealed class Dict
 
     /// <summary>
     /// Gets the first present value among <paramref name="key1"/>, <paramref name="key2"/>
-    /// (e.g. abbreviated inline-image keys). Mirrors pdf.js's multi-key <c>Dict.get</c>.
+    /// (e.g. abbreviated inline-image keys).
     /// </summary>
     public object? Get(string key1, string key2)
         => _map.ContainsKey(key1) ? Get(key1) : Get(key2);
@@ -169,7 +168,7 @@ public sealed class RefSet
     public void Remove(Ref reference) => _set.Remove(reference);
 }
 
-/// <summary>A cache keyed by <see cref="Ref"/>, mirroring pdf.js's <c>RefSetCache</c>.</summary>
+/// <summary>A cache keyed by <see cref="Ref"/>.</summary>
 public sealed class RefSetCache<TValue>
 {
     private readonly Dictionary<Ref, TValue> _map = new();
@@ -182,8 +181,7 @@ public sealed class RefSetCache<TValue>
 }
 
 /// <summary>
-/// Singleton sentinel objects used throughout parsing, equivalent to the
-/// frozen singletons declared in pdf.js primitives.js.
+/// Singleton sentinel objects used throughout parsing.
 /// </summary>
 public static class Primitives
 {

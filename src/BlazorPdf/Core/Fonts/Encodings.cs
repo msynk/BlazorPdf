@@ -1,7 +1,6 @@
-// Standard PDF base encodings (code -> glyph name) per PDF 32000-1:2008 Annex D,
-// a clean-room C# port of the tables in pdf.js `src/core/encodings.js`. Used to
-// resolve simple-font character codes to glyph names (and thence to Unicode)
-// when a font supplies a base encoding and/or a /Differences array. See NOTICE.
+// Standard PDF base encodings (code -> glyph name) per PDF 32000-1:2008 Annex D.
+// Used to resolve simple-font character codes to glyph names (and thence to
+// Unicode) when a font supplies a base encoding and/or a /Differences array.
 
 namespace BlazorPdf.Core.Fonts;
 
@@ -160,8 +159,8 @@ internal static class Encodings
         return e;
     }
 
-    // Adobe Symbol font built-in encoding (PDF 32000-1:2008 Annex D.5), a
-    // clean-room port of pdf.js `SymbolSetEncoding`. Greek letters and math signs.
+    // Adobe Symbol font built-in encoding (PDF 32000-1:2008 Annex D.5).
+    // Greek letters and math signs.
     private static string[] BuildSymbol()
     {
         var e = new string[256];
@@ -225,8 +224,7 @@ internal static class Encodings
         return e;
     }
 
-    // Adobe ZapfDingbats built-in encoding (PDF 32000-1:2008 Annex D.6), a
-    // clean-room port of pdf.js `ZapfDingbatsEncoding`.
+    // Adobe ZapfDingbats built-in encoding (PDF 32000-1:2008 Annex D.6).
     private static string[] BuildZapfDingbats()
     {
         var e = new string[256];

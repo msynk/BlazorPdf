@@ -1,5 +1,4 @@
-// Clean-room C# port of the Parser from pdf.js `src/core/parser.js`.
-// Original: Copyright (c) Mozilla Foundation, Apache-2.0. See NOTICE.
+// The object parser for PDF token streams.
 
 namespace BlazorPdf.Core;
 
@@ -7,7 +6,7 @@ namespace BlazorPdf.Core;
 /// Builds composite PDF objects from the token stream produced by a
 /// <see cref="Lexer"/>: arrays, dictionaries, indirect references
 /// (<c>n g R</c>), indirect objects (<c>n g obj ... endobj</c>) and streams.
-/// Uses two-token lookahead, exactly like pdf.js.
+/// Uses two-token lookahead.
 /// </summary>
 public sealed class Parser
 {
@@ -71,7 +70,7 @@ public sealed class Parser
             {
                 if (_buf1 is not Name key)
                 {
-                    Shift(); // skip a malformed key, like pdf.js
+                    Shift(); // skip a malformed key
                     continue;
                 }
                 Shift();

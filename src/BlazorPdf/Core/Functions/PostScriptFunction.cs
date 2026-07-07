@@ -1,5 +1,4 @@
-// Clean-room C# port of the Type 4 (PostScript calculator) function from
-// pdf.js `src/core/ps_parser.js` / `function.js`. See NOTICE.
+// Type 4 (PostScript calculator) function parsing and evaluation.
 
 using System.Globalization;
 using BlazorPdf.Core.Filters;

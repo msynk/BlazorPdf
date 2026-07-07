@@ -1,5 +1,4 @@
-// Clean-room C# port of image decoding from pdf.js `src/core/image.js`
-// (the raster cases needed to produce displayable pixels). See NOTICE.
+// Image decoding: the raster cases needed to produce displayable pixels.
 
 using BlazorPdf.Core.Filters;
 

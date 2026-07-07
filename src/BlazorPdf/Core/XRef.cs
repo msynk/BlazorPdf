@@ -1,5 +1,4 @@
-// Clean-room C# port of the cross-reference reader from pdf.js
-// `src/core/xref.js`. See NOTICE.
+// Cross-reference table and stream reader.
 
 using System.Text;
 using BlazorPdf.Core.Filters;
@@ -10,7 +9,7 @@ namespace BlazorPdf.Core;
 /// <summary>
 /// Reads a PDF cross-reference table or cross-reference stream (PDF 1.5+),
 /// follows <c>/Prev</c> and hybrid <c>/XRefStm</c> chains, and resolves
-/// indirect references — including objects packed inside object streams.
+/// indirect references - including objects packed inside object streams.
 /// </summary>
 public sealed class XRef : IXRef
 {

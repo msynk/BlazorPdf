@@ -1,6 +1,4 @@
-// Clean-room C# port of axial/radial shading handling from pdf.js
-// `src/core/pattern.js` (RadialAxialShading), emitted as CSS gradients for the
-// HTML renderer. See NOTICE.
+// Axial/radial shading handling, emitted as CSS gradients for the HTML renderer.
 
 using System.Globalization;
 using System.Text;

@@ -1,6 +1,6 @@
 // Original C# implementation of the RC4 stream cipher, used by the standard PDF
 // security handler (encryption revisions 2–4). RC4 is a symmetric algorithm, so
-// the same routine encrypts and decrypts. See NOTICE.
+// the same routine encrypts and decrypts.
 
 namespace BlazorPdf.Core.Security;
 

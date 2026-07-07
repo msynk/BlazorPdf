@@ -1,6 +1,4 @@
-// Clean-room C# port of the font model from pdf.js `src/core/fonts.js` /
-// `src/core/evaluator.js` (the parts needed to position and extract text).
-// See NOTICE.
+// The font model: the parts needed to position and extract text.
 
 using BlazorPdf.Core.Filters;
 using BlazorPdf.Core.Geometry;
@@ -492,7 +490,7 @@ public sealed class PdfFont
 /// to text space), the <c>/CharProcs</c> content streams, the glyph resources,
 /// and the code-to-glyph-name encoding. Type3 glyphs are rendered by executing
 /// each glyph's content stream, unlike other fonts whose glyphs are drawn from
-/// outlines or substituted. Mirrors the Type3 handling in pdf.js evaluator.
+/// outlines or substituted.
 /// </summary>
 public sealed class Type3FontData
 {

@@ -1,5 +1,4 @@
-// Clean-room C# port of the affine-transform helpers from pdf.js
-// `src/shared/util.js` (Util.transform / applyTransform). See NOTICE.
+// Affine-transform helpers for PDF coordinate spaces.
 
 using System.Globalization;
 
@@ -28,8 +27,7 @@ public readonly struct Matrix
 
     /// <summary>
     /// Concatenates two transforms so that the result applies <paramref name="inner"/>
-    /// first and <paramref name="outer"/> second. Equivalent to pdf.js
-    /// <c>Util.transform(outer, inner)</c>.
+    /// first and <paramref name="outer"/> second.
     /// </summary>
     public static Matrix Concat(Matrix outer, Matrix inner) => new(
         outer.A * inner.A + outer.C * inner.B,

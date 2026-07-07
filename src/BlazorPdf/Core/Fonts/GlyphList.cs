@@ -1,7 +1,6 @@
-// Glyph-name to Unicode resolution, a focused port of the Adobe Glyph List
-// logic used by pdf.js `src/core/glyphlist.js` and the name-parsing rules in
-// `src/core/fonts_utils.js`. Covers the glyph names referenced by the standard
-// Latin encodings plus the algorithmic "uniXXXX"/"uXXXXXX" forms. See NOTICE.
+// Glyph-name to Unicode resolution based on the Adobe Glyph List. Covers the
+// glyph names referenced by the standard Latin encodings plus the algorithmic
+// "uniXXXX"/"uXXXXXX" forms.
 
 using System.Globalization;
 
@@ -72,7 +71,7 @@ internal static class GlyphList
             }
         }
 
-        // "uniXXXX" — one or more 4-hex-digit UTF-16 code units.
+        // "uniXXXX" - one or more 4-hex-digit UTF-16 code units.
         if (name.Length >= 7 && name.StartsWith("uni", StringComparison.Ordinal)
             && (name.Length - 3) % 4 == 0)
         {
@@ -96,7 +95,7 @@ internal static class GlyphList
             }
         }
 
-        // "uXXXX".."uXXXXXX" — a single code point of 4 to 6 hex digits.
+        // "uXXXX".."uXXXXXX" - a single code point of 4 to 6 hex digits.
         if (name.Length is >= 5 and <= 7 && name[0] == 'u'
             && int.TryParse(name.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp)
             && cp <= 0x10FFFF)
@@ -175,8 +174,7 @@ internal static class GlyphList
         ["zcaron"] = "\u017E", ["Ydieresis"] = "\u0178",
     };
 
-    // Adobe Symbol glyph names → Unicode (Greek alphabet + mathematical signs),
-    // mirroring the Symbol subset of pdf.js `glyphlist.js` / `symbol` handling.
+    // Adobe Symbol glyph names → Unicode (Greek alphabet + mathematical signs).
     private static readonly Dictionary<string, string> SymbolMap = new(StringComparer.Ordinal)
     {
         ["Alpha"] = "\u0391", ["Beta"] = "\u0392", ["Gamma"] = "\u0393", ["Delta"] = "\u0394",
@@ -213,8 +211,7 @@ internal static class GlyphList
         ["angleleft"] = "\u2329", ["angleright"] = "\u232A",
     };
 
-    // Adobe ZapfDingbats "aNNN" glyph names → Unicode dingbat characters,
-    // the standard mapping used by pdf.js for ZapfDingbats text extraction.
+    // Adobe ZapfDingbats "aNNN" glyph names → Unicode dingbat characters.
     private static readonly Dictionary<string, string> DingbatsMap = new(StringComparer.Ordinal)
     {
         ["a1"] = "\u2701", ["a2"] = "\u2702", ["a3"] = "\u2704", ["a4"] = "\u260E",

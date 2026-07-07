@@ -1,7 +1,6 @@
 // Built-in glyph-advance metrics for the PDF "Standard 14" fonts, used when a
 // non-embedded simple font omits its /Widths array. These are the factual
 // Adobe Core-14 AFM advance widths (1/1000 em) for character codes 32..126.
-// See NOTICE.
 
 namespace BlazorPdf.Core.Fonts;
 

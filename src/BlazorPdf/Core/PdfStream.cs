@@ -1,11 +1,10 @@
-// Clean-room C# port of the in-memory stream from pdf.js `src/core/stream.js`.
-// Original: Copyright (c) Mozilla Foundation, Apache-2.0. See NOTICE.
+// An in-memory PDF stream.
 
 namespace BlazorPdf.Core;
 
 /// <summary>
-/// A <see cref="BaseStream"/> backed by an in-memory byte buffer. Equivalent to
-/// the pdf.js <c>Stream</c> class. A PDF stream object is represented by one of
+/// A <see cref="BaseStream"/> backed by an in-memory byte buffer. A PDF stream
+/// object is represented by one of
 /// these with its <see cref="BaseStream.Dict"/> set.
 /// </summary>
 public sealed class PdfStream : BaseStream

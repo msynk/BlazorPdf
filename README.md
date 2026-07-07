@@ -3,14 +3,13 @@
 A pure-C# PDF viewer component for Blazor. No `<canvas>` pixel blitting, no browser
 PDF plugin, no native interop, no commercial SDK.
 
-The rendering engine is a **clean-room C# port of [Mozilla pdf.js](https://github.com/mozilla/pdf.js)**.
-It parses a PDF and renders each page into plain, positioned HTML/CSS DOM —
+The rendering engine is written entirely in C#.
+It parses a PDF and renders each page into plain, positioned HTML/CSS DOM -
 `<div>` with CSS `clip-path` for vector fills and clips, `<span>` for selectable
 text, `<img>` for rasters, and CSS gradients for shadings. Because text stays as
 real DOM, selection, find-in-page and accessibility work for free.
 
-> **License:** Apache-2.0. The engine is a derivative work of pdf.js; see
-> [`NOTICE`](src/BlazorPdf/NOTICE) for attribution.
+> **License:** Apache-2.0. See [`LICENSE`](LICENSE).
 
 ## Features
 
@@ -58,7 +57,7 @@ Targets `net10.0`.
 
 ## Usage
 
-Register nothing special — the component ships its own JS module under
+Register nothing special - the component ships its own JS module under
 `_content/BlazorPdf/`. Provide a `PdfSource` built from in-memory bytes:
 
 ```razor
@@ -92,8 +91,8 @@ Register nothing special — the component ships its own JS module under
 | `Height`            | `string`              | `"780px"`      | CSS height of the viewer container.          |
 | `ShowToolbar`       | `bool`                | `true`         | Show the toolbar.                            |
 | `InitialZoomMode`   | `PdfZoomMode`         | `FitWidth`     | Initial zoom behavior.                       |
-| `OnDocumentLoaded`  | `EventCallback`       | —              | Raised after a document loads.               |
-| `OnError`           | `EventCallback<string>` | —            | Raised on load/render failure.               |
+| `OnDocumentLoaded`  | `EventCallback`       | -              | Raised after a document loads.               |
+| `OnError`           | `EventCallback<string>` | -            | Raised on load/render failure.               |
 
 ### Using the engine directly
 
@@ -128,14 +127,12 @@ Console.WriteLine(doc.PageLabels[0]);  // e.g. "i" or "1"
 ```
 src/
   BlazorPdf/           # the library (engine + Blazor component)
-    Core/              # pure-C# pdf.js port (no Blazor dependency)
+    Core/              # pure-C# PDF engine (no Blazor dependency)
     BlazorPdfViewer.*  # the Razor component, code-behind, CSS, JS
   BlazorPdf.Demo/      # sample Blazor host
   BlazorPdf.Tests/     # xUnit test suite
 ```
 
-The `Core` namespace mirrors pdf.js module-for-module (`Core/Parser.cs` ≈
-`core/parser.js`, `Core/Render/ColorSpace.cs` ≈ `core/colorspace.js`, and so on).
 See [`src/BlazorPdf/README.md`](src/BlazorPdf/README.md) for the full module map.
 
 ## Building and testing
@@ -153,7 +150,7 @@ color spaces, fonts, rendering operators and outline resolution end-to-end.
 
 ## Limitations
 
-These degrade gracefully — affected pages still load:
+These degrade gracefully - affected pages still load:
 
 - **Bare CFF/Type1 embedded fonts** render via substitute fonts with correct
   Unicode rather than the embedded glyph outlines. (Type3 fonts now render from
@@ -166,13 +163,9 @@ These degrade gracefully — affected pages still load:
 
 ## Contributing
 
-The project is being built by porting pdf.js incrementally. When adding a
-feature, mirror the corresponding pdf.js module, keep the `Core` engine free of
-Blazor dependencies, and add tests under `BlazorPdf.Tests`.
+When adding a feature, keep the `Core` engine free of Blazor dependencies and
+add tests under `BlazorPdf.Tests`.
 
-## License & attribution
+## License
 
-Distributed under the **Apache License 2.0**. The rendering engine is a
-clean-room derivative of [Mozilla pdf.js](https://github.com/mozilla/pdf.js)
-(Copyright Mozilla Foundation, Apache-2.0). See [`NOTICE`](src/BlazorPdf/NOTICE)
-and [`LICENSE`](LICENSE).
+Distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE).

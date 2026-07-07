@@ -15,8 +15,8 @@
     <PackageId>BlazorPdf</PackageId>
     <Version>0.2.0</Version>
     <Authors>BlazorPdf contributors</Authors>
-    <Description>A pure-C# PDF viewer component for Blazor. The rendering engine is a clean-room C# port of Mozilla pdf.js.</Description>
-    <PackageTags>blazor;pdf;viewer;component;pdfjs;razor</PackageTags>
+    <Description>A pure-C# PDF viewer component for Blazor. Parses PDF files and renders pages as plain HTML/CSS DOM.</Description>
+    <PackageTags>blazor;pdf;viewer;component;razor</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryType>git</RepositoryType>
@@ -38,7 +38,6 @@
 
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" Condition="Exists('README.md')" />
-    <None Include="NOTICE" Pack="true" PackagePath="\" Condition="Exists('NOTICE')" />
   </ItemGroup>
 
 </Project>

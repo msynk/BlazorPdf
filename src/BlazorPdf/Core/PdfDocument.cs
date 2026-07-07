@@ -1,12 +1,10 @@
-// Clean-room C# port combining pdf.js `src/core/document.js` (PDFDocument) and
-// `src/core/catalog.js` page-tree traversal. See NOTICE.
+// Document parsing: cross-reference resolution, the catalog and page-tree traversal.
 
 namespace BlazorPdf.Core;
 
 /// <summary>
 /// A parsed PDF document: cross-reference resolution, the catalog, and the
-/// flattened list of pages. This is the entry point of the C# engine and the
-/// equivalent of pdf.js's <c>PDFDocument</c>.
+/// flattened list of pages. This is the entry point of the C# engine.
 /// </summary>
 public sealed class PdfDocument
 {

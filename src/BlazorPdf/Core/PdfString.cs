@@ -1,5 +1,3 @@
-// Part of the clean-room pdf.js port. See NOTICE.
-
 using System.Text;
 
 namespace BlazorPdf.Core;
@@ -18,7 +16,7 @@ public sealed class PdfString
 
     public int Length => Bytes.Length;
 
-    /// <summary>Interprets the bytes as Latin-1, matching pdf.js's binary-string model.</summary>
+    /// <summary>Interprets the bytes as Latin-1.</summary>
     public string AsLatin1() => Encoding.Latin1.GetString(Bytes);
 
     /// <summary>

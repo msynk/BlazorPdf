@@ -1,5 +1,5 @@
 // WinAnsiEncoding code-to-Unicode mapping per the PDF specification (Annex D).
-// This is factual encoding data, re-implemented in C#. See NOTICE.
+// This is factual encoding data, re-implemented in C#.
 
 using System.Text;
 

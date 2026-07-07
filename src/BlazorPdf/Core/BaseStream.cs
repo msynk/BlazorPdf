@@ -1,11 +1,10 @@
-// Clean-room C# port of pdf.js `src/core/base_stream.js`.
-// Original: Copyright (c) Mozilla Foundation, Apache-2.0. See NOTICE.
+// Abstract byte source for the lexer and parser.
 
 namespace BlazorPdf.Core;
 
 /// <summary>
-/// Abstract byte source consumed by the lexer and parser. Mirrors the pdf.js
-/// <c>BaseStream</c> interface: a movable read position bounded by
+/// Abstract byte source consumed by the lexer and parser: a movable read
+/// position bounded by
 /// <see cref="Start"/>..<see cref="End"/>, with single-byte and range reads.
 /// Decoded streams (Flate, etc.) and the cross-reference reader all build on it.
 /// </summary>

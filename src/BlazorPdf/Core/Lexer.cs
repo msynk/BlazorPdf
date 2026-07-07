@@ -1,5 +1,4 @@
-// Clean-room C# port of the Lexer from pdf.js `src/core/parser.js`.
-// Original: Copyright (c) Mozilla Foundation, Apache-2.0. See NOTICE.
+// The lexer tokenizing PDF byte streams.
 
 using System.Text;
 
@@ -184,7 +183,7 @@ public sealed class Lexer
 
         if (ch is < '0' or > '9' && ch != '.')
         {
-            // Not actually a number (e.g. a lone sign). Treat as zero like pdf.js.
+            // Not actually a number (e.g. a lone sign). Treat as zero.
             if (sb.Length == 0 || sb.ToString() is "-" or ".")
             {
                 return 0d;

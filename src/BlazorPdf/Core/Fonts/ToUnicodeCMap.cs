@@ -1,5 +1,4 @@
-// Clean-room C# port of the ToUnicode CMap reader from pdf.js `src/core/cmap.js`
-// (the bfchar / bfrange handling). See NOTICE.
+// ToUnicode CMap reader (bfchar / bfrange handling).
 
 using System.Text;
 

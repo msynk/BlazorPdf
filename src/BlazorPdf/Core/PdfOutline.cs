@@ -1,6 +1,5 @@
-// Document outline (bookmarks) parsing, a clean-room C# port of the catalog
-// outline + destination handling in pdf.js `src/core/catalog.js`. Resolves the
-// /Outlines tree and maps each item's destination to a page index. See NOTICE.
+// Document outline (bookmarks) parsing. Resolves the /Outlines tree and maps
+// each item's destination to a page index.
 
 namespace BlazorPdf.Core;
 

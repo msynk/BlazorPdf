@@ -1,7 +1,6 @@
-// Clean-room C# implementation of the CCITTFaxDecode filter (ITU-T T.4 / T.6),
-// following the standard specification and the approach of pdf.js
-// `src/core/ccitt.js`. The Huffman code tables below are factual values from
-// the ITU recommendations. See NOTICE.
+// C# implementation of the CCITTFaxDecode filter (ITU-T T.4 / T.6), following
+// the standard specification. The Huffman code tables below are factual values
+// from the ITU recommendations.
 
 namespace BlazorPdf.Core.Filters;
 
@@ -222,7 +221,7 @@ internal static class CcittFaxDecoder
         {
             return r.ReadBit() == 1 ? 3 : -3;      // 0000011=VR3, 0000010=VL3
         }
-        // 0000001... extension / EOL — treat as end of row.
+        // 0000001... extension / EOL - treat as end of row.
         return Eol;
     }
 

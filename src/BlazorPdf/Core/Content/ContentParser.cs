@@ -1,5 +1,4 @@
-// Clean-room C# port of the content-stream preprocessing from pdf.js
-// `src/core/evaluator.js` (EvaluatorPreprocessor). See NOTICE.
+// Content-stream preprocessing into operations.
 
 namespace BlazorPdf.Core.Content;
 

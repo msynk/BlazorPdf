@@ -1,5 +1,4 @@
-// Clean-room C# port of the graphics-state tracking from pdf.js rendering
-// (`src/display/canvas.js` / `src/core/evaluator.js`). See NOTICE.
+// Graphics-state tracking for content-stream rendering.
 
 using BlazorPdf.Core.Fonts;
 using BlazorPdf.Core.Geometry;

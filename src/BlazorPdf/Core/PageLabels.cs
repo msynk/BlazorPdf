@@ -1,5 +1,4 @@
-// Page-label (/PageLabels) number-tree parsing, a clean-room C# port of the
-// page-label handling in pdf.js `src/core/catalog.js` (getPageLabels). See NOTICE.
+// Page-label (/PageLabels) number-tree parsing.
 
 using System.Text;
 
@@ -125,7 +124,7 @@ internal static class PageLabelBuilder
     }
 
     // Spreadsheet-style labelling: 1->A, 26->Z, 27->AA, 28->BB (per the PDF spec,
-    // each additional letter repeats: AA, BB, ... CCC), matching pdf.js.
+    // each additional letter repeats: AA, BB, ... CCC).
     private static string ToAlpha(int number, bool uppercase)
     {
         if (number <= 0)
