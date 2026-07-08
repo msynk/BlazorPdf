@@ -25,7 +25,7 @@ public sealed class HtmlRenderer
 
     private readonly PdfPage _page;
     private readonly IXRef _xref;
-    private readonly Dictionary<string, PdfFont> _fontCache = new();
+    private readonly Dictionary<object, PdfFont> _fontCache;
 
     private GraphicsState _state = new();
     private readonly Stack<GraphicsState> _stack = new();
@@ -47,21 +47,53 @@ public sealed class HtmlRenderer
     private Matrix _textMatrix = Matrix.Identity;
     private Matrix _textLineMatrix = Matrix.Identity;
 
-    private readonly StringBuilder _fontFaces = new();
-    private readonly HashSet<string> _emittedFamilies = new();
-    private readonly Dictionary<string, string?> _patternCache = new();
+    private readonly StringBuilder _fontFaces;         // document-wide accumulator (shared)
+    private readonly HashSet<string> _emittedFamilies; // dedup across pages (shared)
+    private readonly StringBuilder _pageFaces = new();  // faces first seen on THIS page
+    private readonly Dictionary<object, string?> _patternCache = new();
     private StringBuilder _html = new();
     private int _openGroups;
+
+    // Marked-content / optional-content state. While OC content is hidden, output
+    // is diverted to a scratch buffer that is discarded at the matching EMC.
+    private int _mcDepth;
+    private int _ocHiddenAtDepth = -1;
+    private StringBuilder? _realHtml;
+    private HashSet<string>? _ocgOff;
     private int _formDepth;
 
     private readonly int _rotationOffset;
 
     public HtmlRenderer(PdfPage page, IXRef xref, int rotationOffset = 0)
+        : this(page, xref, null, rotationOffset)
+    {
+    }
+
+    /// <summary>
+    /// Creates a renderer that shares an embedded-font store across pages, so each
+    /// font's <c>@font-face</c> base64 is emitted once for the whole document
+    /// (retrieve it via <see cref="PdfFontStore.FontFaceStyle"/>). When
+    /// <paramref name="fontStore"/> is <c>null</c> the page is self-contained.
+    /// </summary>
+    public HtmlRenderer(PdfPage page, IXRef xref, PdfFontStore? fontStore, int rotationOffset = 0)
     {
         _page = page;
         _xref = xref;
         _resources = page.Resources;
         _rotationOffset = ((rotationOffset % 360) + 360) % 360;
+
+        if (fontStore is not null)
+        {
+            _fontCache = fontStore.Fonts;
+            _emittedFamilies = fontStore.EmittedFamilies;
+            _fontFaces = fontStore.FontFaces;
+        }
+        else
+        {
+            _fontCache = new Dictionary<object, PdfFont>();
+            _emittedFamilies = new HashSet<string>();
+            _fontFaces = new StringBuilder();
+        }
     }
 
     /// <summary>Renders the page and returns a single positioned <c>&lt;div&gt;</c>.</summary>
@@ -106,9 +138,11 @@ public sealed class HtmlRenderer
         var sb = new StringBuilder();
         sb.Append(string.Create(CultureInfo.InvariantCulture,
             $"<div class=\"bp-html-page\" style=\"position:absolute;left:0;top:0;width:{viewW:0.##}px;height:{viewH:0.##}px;overflow:hidden;background:#fff;color:#000;transform:scale(var(--bp-scale,1));transform-origin:top left\">"));
-        if (_fontFaces.Length > 0)
+        // Emit only the @font-face rules first seen on THIS page, so a shared
+        // document store never repeats a font's base64 payload across pages.
+        if (_pageFaces.Length > 0)
         {
-            sb.Append("<style>").Append(_fontFaces).Append("</style>");
+            sb.Append("<style>").Append(_pageFaces).Append("</style>");
         }
         sb.Append(_html);
         sb.Append("</div>");
@@ -119,7 +153,15 @@ public sealed class HtmlRenderer
     {
         foreach (var op in ops)
         {
-            Execute(op);
+            try
+            {
+                Execute(op);
+            }
+            catch
+            {
+                // A single malformed operator must not abort the whole page;
+                // skip it and continue with the rest of the content stream.
+            }
         }
     }
 
@@ -157,14 +199,19 @@ public sealed class HtmlRenderer
                 }
                 break;
             case "cm":
-                _state.Ctm = Matrix.Concat(_state.Ctm,
-                    new Matrix(op.Num(0), op.Num(1), op.Num(2), op.Num(3), op.Num(4), op.Num(5)));
+                // Require all six operands: a short/garbled cm would otherwise
+                // build an all-zero singular matrix and blank everything after it.
+                if (op.Operands.Count >= 6)
+                {
+                    _state.Ctm = Matrix.Concat(_state.Ctm,
+                        new Matrix(op.Num(0), op.Num(1), op.Num(2), op.Num(3), op.Num(4), op.Num(5)));
+                }
                 break;
             case "w": _state.LineWidth = op.Num(0); break;
             case "d": SetDash(op); break;
             case "J": _state.LineCap = (int)op.Num(0); break;
             case "j": _state.LineJoin = (int)op.Num(0); break;
-            case "M": break; // miter limit: not modeled by the fill-based stroker
+            case "M": _state.MiterLimit = op.Num(0); break;
             case "ri": case "i": break; // rendering intent / flatness: no-op
             case "gs": ApplyExtGState(op); break;
 
@@ -209,6 +256,11 @@ public sealed class HtmlRenderer
             case "sh": PaintShading(op); break;
             case "Do": DoXObject(op); break;
             case "INLINE_IMAGE": DrawInlineImage(op); break;
+
+            // Marked content / optional content groups.
+            case "BDC": BeginMarkedContent(op); break;
+            case "BMC": _mcDepth++; break;
+            case "EMC": EndMarkedContent(); break;
 
             // Text objects.
             case "BT":
@@ -411,6 +463,13 @@ public sealed class HtmlRenderer
             $" stroke-width=\"{deviceWidth:0.###}\""));
         _html.Append(" stroke-linecap=\"").Append(LineCapName(_state.LineCap)).Append('"');
         _html.Append(" stroke-linejoin=\"").Append(LineJoinName(_state.LineJoin)).Append('"');
+        if (_state.LineJoin == 0)
+        {
+            // Emit the PDF miter limit explicitly; SVG's default (4) differs from
+            // PDF's (10), so miter joins would otherwise bevel too eagerly.
+            _html.Append(string.Create(CultureInfo.InvariantCulture,
+                $" stroke-miterlimit=\"{_state.MiterLimit:0.###}\""));
+        }
         if (_state.StrokeAlpha < 1)
         {
             _html.Append(string.Create(CultureInfo.InvariantCulture,
@@ -505,9 +564,18 @@ public sealed class HtmlRenderer
         {
             return;
         }
-        // Fill the current clip region (or the whole page when unclipped).
+        // Fill the current clip region (or the whole page when unclipped),
+        // honoring the current fill alpha and blend mode.
         _html.Append("<div style=\"position:absolute;inset:0;background:");
         _html.Append(background);
+        if (_state.FillAlpha < 1)
+        {
+            _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
+        }
+        if (_state.BlendMode.Length > 0)
+        {
+            _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+        }
         _html.Append("\"></div>");
     }
 
@@ -597,6 +665,93 @@ public sealed class HtmlRenderer
     private static int PixelSize(Dict dict, string key1, string key2)
         => dict.Get(key1, key2) is double d ? (int)d : 0;
 
+    // ----- Optional content (OCG) -----
+
+    private void BeginMarkedContent(Operation op)
+    {
+        _mcDepth++;
+        // A "/OC <tag>" marked-content section is hidden when its optional-content
+        // group is switched off in the default configuration.
+        if (_ocHiddenAtDepth < 0 && op.Operands.Count >= 2
+            && op.Operands[0] is Name tag && tag.Value == "OC"
+            && IsOptionalContentHidden(op.Operands[1]))
+        {
+            _ocHiddenAtDepth = _mcDepth;
+            _realHtml = _html;
+            _html = new StringBuilder(); // divert & discard until the matching EMC
+        }
+    }
+
+    private void EndMarkedContent()
+    {
+        if (_ocHiddenAtDepth == _mcDepth && _realHtml is not null)
+        {
+            _html = _realHtml; // drop the hidden content
+            _realHtml = null;
+            _ocHiddenAtDepth = -1;
+        }
+        if (_mcDepth > 0)
+        {
+            _mcDepth--;
+        }
+    }
+
+    private bool IsOptionalContentHidden(object? operand)
+    {
+        object? raw = operand;
+        if (operand is Name propName && _resources?.Get("Properties") is Dict props)
+        {
+            raw = props.GetRaw(propName.Value);
+        }
+        if (_xref.FetchIfRef(raw) is not Dict ocg)
+        {
+            return false;
+        }
+
+        // An OCMD references one or more OCGs; hidden only when every member is off.
+        if (Primitives.IsName(ocg.Get("Type"), "OCMD"))
+        {
+            object? ocgs = ocg.GetRaw("OCGs");
+            if (ocgs is List<object?> list)
+            {
+                if (list.Count == 0)
+                {
+                    return false;
+                }
+                foreach (var g in list)
+                {
+                    if (!IsOcgOff(g))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            return IsOcgOff(ocgs);
+        }
+        return IsOcgOff(raw);
+    }
+
+    private bool IsOcgOff(object? raw)
+    {
+        if (_ocgOff is null)
+        {
+            _ocgOff = new HashSet<string>();
+            if ((_xref as XRef)?.Root?.Get("OCProperties") is Dict ocp && ocp.Get("D") is Dict cfg
+                && cfg.Get("OFF") is List<object?> off)
+            {
+                foreach (var item in off)
+                {
+                    if (item is Ref r)
+                    {
+                        _ocgOff.Add(r.ToRefString());
+                    }
+                }
+            }
+        }
+        return raw is Ref rf && _ocgOff.Contains(rf.ToRefString());
+    }
+
     private void DrawForm(PdfStream stream)
     {
         if (_formDepth >= MaxFormDepth)
@@ -621,6 +776,20 @@ public sealed class HtmlRenderer
             _resources = formResources;
         }
 
+        // Clip the form to its /BBox transformed into device space (spec §8.10.1):
+        // form content must not paint outside its bounding box.
+        bool bboxClip = false;
+        if (stream.Dict.Get("BBox") is List<object?> bbox && bbox.Count >= 4)
+        {
+            var (c0x, c0y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[1]));
+            var (c1x, c1y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[1]));
+            var (c2x, c2y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[3]));
+            var (c3x, c3y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[3]));
+            _html.Append(string.Create(CultureInfo.InvariantCulture,
+                $"<div style=\"position:absolute;inset:0;clip-path:path('M{c0x:0.##} {c0y:0.##} L{c1x:0.##} {c1y:0.##} L{c2x:0.##} {c2y:0.##} L{c3x:0.##} {c3y:0.##} Z')\">"));
+            bboxClip = true;
+        }
+
         try
         {
             byte[] content = Filters.StreamDecoder.Decode(stream);
@@ -629,6 +798,11 @@ public sealed class HtmlRenderer
         catch
         {
             // Ignore malformed form content.
+        }
+
+        if (bboxClip)
+        {
+            _html.Append("</div>");
         }
 
         _resources = savedResources;
@@ -653,6 +827,13 @@ public sealed class HtmlRenderer
         {
             return;
         }
+
+        // Clear any dangling path / clip state left by an unterminated content
+        // stream so it cannot leak into annotation appearance rendering.
+        _pathData.Clear();
+        _subpaths.Clear();
+        _currentSub = null;
+        _pendingClipEvenOdd = null;
 
         foreach (var item in annots)
         {
@@ -756,8 +937,10 @@ public sealed class HtmlRenderer
         {
             uri = u.AsLatin1();
         }
-        if (uri is null)
+        if (uri is null || !IsAllowedUri(uri))
         {
+            // Unknown, relative, or unsafe scheme (javascript:, data:, …): drop the
+            // anchor entirely so the hotspot stays inert and no script can run.
             return;
         }
 
@@ -805,6 +988,31 @@ public sealed class HtmlRenderer
         return [Math.Min(x0, x1), Math.Min(y0, y1), Math.Max(x0, x1), Math.Max(y0, y1)];
     }
 
+    // Schemes considered safe to emit as clickable links, mirroring pdf.js
+    // `createValidAbsoluteUrl`. Anything else (notably javascript: and data:)
+    // is dropped so a crafted /URI cannot execute script in the host app.
+    private static readonly string[] AllowedUriSchemes = { "http", "https", "mailto", "ftp", "tel" };
+
+    private static bool IsAllowedUri(string uri)
+    {
+        int colon = uri.IndexOf(':');
+        if (colon <= 0)
+        {
+            return false; // no scheme, or leading ':' — treat as unsafe
+        }
+        // A URI scheme is letters/digits/+/-/. and must precede any '/', '?' or '#'.
+        for (int i = 0; i < colon; i++)
+        {
+            char ch = uri[i];
+            if (!(char.IsAsciiLetterOrDigit(ch) || ch is '+' or '-' or '.'))
+            {
+                return false;
+            }
+        }
+        string scheme = uri[..colon].ToLowerInvariant();
+        return Array.IndexOf(AllowedUriSchemes, scheme) >= 0;
+    }
+
     // ----- Text -----
 
     private void SetFont(Operation op)
@@ -820,12 +1028,21 @@ public sealed class HtmlRenderer
 
     private PdfFont? ResolveFont(string name)
     {
-        string cacheKey = $"{_formDepth}:{name}";
+        if (_resources?.Get("Font") is not Dict fonts)
+        {
+            return null;
+        }
+        // Key the cache by the font's object identity — the indirect reference if
+        // present (value-equal), otherwise the dictionary instance — rather than
+        // "depth:name". Different resource dictionaries can reuse a resource name
+        // for different fonts, so a name-based key returned the wrong font.
+        object? raw = fonts.GetRaw(name);
+        object cacheKey = raw is Ref r ? r : _xref.FetchIfRef(raw) ?? name;
         if (_fontCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
         }
-        if (_resources?.Get("Font") is Dict fonts && fonts.Get(name) is Dict fontDict)
+        if (_xref.FetchIfRef(raw) is Dict fontDict)
         {
             var font = PdfFont.Create(fontDict, _xref);
             _fontCache[cacheKey] = font;
@@ -888,7 +1105,10 @@ public sealed class HtmlRenderer
             displacement += (w0 + spacing) * _state.HorizScale;
         }
 
-        if (text.Length > 0 && _state.RenderMode != 7 && _state.RenderMode != 3)
+        // Emit every non-empty run, including invisible modes 3/7 (OCR layers on
+        // scanned PDFs) — they paint transparently but still participate in text
+        // selection and search, the product's headline feature.
+        if (text.Length > 0)
         {
             EmitText(text.ToString());
         }
@@ -989,12 +1209,31 @@ public sealed class HtmlRenderer
         double e = trm.C * AscentFactor + trm.E;
         double f = trm.D * AscentFactor + trm.F;
 
+        // Text render modes (Tr): 0 fill, 1 stroke, 2 fill+stroke, 3 invisible,
+        // 4-6 the same plus clip, 7 clip-only. Modes 3/7 stay selectable but
+        // paint nothing (transparent); stroke modes get -webkit-text-stroke.
+        int mode = _state.RenderMode;
+        bool invisible = mode is 3 or 7;
+        bool doFill = mode is 0 or 2 or 4 or 6;
+        bool doStroke = mode is 1 or 2 or 5 or 6;
+
         _html.Append("<span style=\"position:absolute;left:0;top:0;white-space:pre;line-height:1");
         _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
-        _html.Append(";color:").Append(_state.FillColor);
+        _html.Append(";color:").Append(invisible || !doFill ? "transparent" : _state.FillColor);
+        if (!invisible && doStroke)
+        {
+            double sw = Math.Max(_state.LineWidth * _state.Ctm.ScaleFactor, 0.1);
+            _html.Append(string.Create(CultureInfo.InvariantCulture,
+                $";-webkit-text-stroke:{sw:0.###}px ")).Append(_state.StrokeColor);
+        }
         AppendFontStyle(_html, _state.Font!);
         _html.Append(string.Create(CultureInfo.InvariantCulture,
             $";transform:matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##});transform-origin:0 0"));
+        // A watermark drawn with /ca must render at that opacity, like fills/images.
+        if (!invisible && _state.FillAlpha < 1)
+        {
+            _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
+        }
         if (_state.BlendMode.Length > 0)
         {
             _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
@@ -1013,8 +1252,10 @@ public sealed class HtmlRenderer
             {
                 string b64 = Convert.ToBase64String(font.EmbeddedProgram!);
                 string fmt = font.EmbeddedFormat!;
-                _fontFaces.Append(
-                    $"@font-face{{font-family:'{family}';src:url(data:font/{fmt};base64,{b64}) format('{fmt}');}}");
+                string face =
+                    $"@font-face{{font-family:'{family}';src:url(data:font/{fmt};base64,{b64}) format('{fmt}');}}";
+                _fontFaces.Append(face);
+                _pageFaces.Append(face);
             }
             sb.Append(";font-family:").Append(family).Append(',').Append(font.GenericFamily);
         }
@@ -1051,6 +1292,27 @@ public sealed class HtmlRenderer
             if (gs.Get("LW") is double lw)
             {
                 _state.LineWidth = lw;
+            }
+            if (gs.Get("LC") is double lc)
+            {
+                _state.LineCap = (int)lc;
+            }
+            if (gs.Get("LJ") is double lj)
+            {
+                _state.LineJoin = (int)lj;
+            }
+            if (gs.Get("ML") is double ml)
+            {
+                _state.MiterLimit = ml;
+            }
+            // /D is [dashArray phase]; convert to device space like the `d` operator.
+            if (gs.Get("D") is List<object?> dashSpec && dashSpec.Count >= 1
+                && dashSpec[0] is List<object?> dashArr)
+            {
+                var pattern = dashArr.Where(o => o is double).Cast<double>()
+                    .Select(v => v * _state.Ctm.ScaleFactor).ToArray();
+                _state.DashArray = pattern.Length > 0 && pattern.Any(v => v > 0) ? pattern : null;
+                _state.DashPhase = dashSpec.Count >= 2 && dashSpec[1] is double ph ? ph * _state.Ctm.ScaleFactor : 0;
             }
             object? bm = gs.Get("BM");
             string? bmName = bm switch
@@ -1173,14 +1435,23 @@ public sealed class HtmlRenderer
 
     private string? ResolveFillPaint(string name)
     {
-        if (_patternCache.TryGetValue(name, out var cached))
+        // Key by the pattern's object identity (indirect ref or dict/stream
+        // instance), not the bare resource name, so patterns in different
+        // resource dictionaries that share a name don't alias each other.
+        object cacheKey = name;
+        if (_resources?.Get("Pattern") is Dict patterns)
+        {
+            object? raw = patterns.GetRaw(name);
+            cacheKey = raw is Ref r ? r : _xref.FetchIfRef(raw) ?? name;
+        }
+        if (_patternCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
         }
-        _patternCache[name] = null; // guard against recursion
+        _patternCache[cacheKey] = null; // guard against recursion
 
         string? result = BuildPattern(name);
-        _patternCache[name] = result;
+        _patternCache[cacheKey] = result;
         return result;
     }
 
@@ -1356,6 +1627,10 @@ public sealed class HtmlRenderer
         Dict? savedResources = _resources;
 
         _state.Ctm = cellCtm;
+        // Clear the pattern from the cell's own state: a cell that issues a fill
+        // before setting a color would otherwise re-enter this same pattern and
+        // blow up the DOM / CPU with unbounded recursion.
+        _state.FillPattern = null;
         _resources = patRes ?? _resources;
 
         try
@@ -1417,9 +1692,8 @@ public sealed class HtmlRenderer
 
     private static string Cmyk(double c, double m, double y, double k)
     {
-        int r = Clamp255((1 - c) * (1 - k));
-        int g = Clamp255((1 - m) * (1 - k));
-        int b = Clamp255((1 - y) * (1 - k));
+        // Single CMYK→RGB implementation lives in ColorSpace (pdf.js polynomial).
+        var (r, g, b) = ColorSpace.CmykToRgb(c, m, y, k);
         return $"rgb({r},{g},{b})";
     }
 

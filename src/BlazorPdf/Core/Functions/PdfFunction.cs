@@ -202,9 +202,10 @@ internal sealed class SampledFunction : PdfFunction
     private readonly double[] _domain;
     private readonly double[] _encode;
     private readonly double[] _decode;
+    private readonly double[] _range;
 
     private SampledFunction(byte[] samples, int bps, int[] size, int inCount, int outCount,
-        double[] domain, double[] encode, double[] decode)
+        double[] domain, double[] encode, double[] decode, double[] range)
     {
         _samples = samples;
         _bps = bps;
@@ -214,6 +215,7 @@ internal sealed class SampledFunction : PdfFunction
         _domain = domain;
         _encode = encode;
         _decode = decode;
+        _range = range;
     }
 
     public static SampledFunction? Build(PdfStream stream)
@@ -236,25 +238,27 @@ internal sealed class SampledFunction : PdfFunction
             size[i] = i < sizeArr.Length ? Math.Max(1, (int)sizeArr[i]) : 1;
         }
 
-        // Encode defaults to [0 size0-1 0 size1-1 ...]; Decode defaults to Range.
-        double[] encode = ReadNumbers(dict.Get("Encode"));
-        if (encode.Length < inCount * 2)
+        // Encode defaults to [0 size0-1 0 size1-1 ...]; missing entries in a
+        // partial Encode array fall back to those per-axis defaults rather than
+        // discarding the values that were supplied.
+        double[] providedEncode = ReadNumbers(dict.Get("Encode"));
+        var encode = new double[inCount * 2];
+        for (int i = 0; i < inCount; i++)
         {
-            encode = new double[inCount * 2];
-            for (int i = 0; i < inCount; i++)
-            {
-                encode[i * 2] = 0;
-                encode[i * 2 + 1] = size[i] - 1;
-            }
+            encode[i * 2] = i * 2 < providedEncode.Length ? providedEncode[i * 2] : 0;
+            encode[i * 2 + 1] = i * 2 + 1 < providedEncode.Length ? providedEncode[i * 2 + 1] : size[i] - 1;
         }
-        double[] decode = ReadNumbers(dict.Get("Decode"));
-        if (decode.Length < range.Length)
+
+        // Decode defaults to Range; a partial Decode falls back to Range per entry.
+        double[] providedDecode = ReadNumbers(dict.Get("Decode"));
+        var decode = new double[range.Length];
+        for (int i = 0; i < range.Length; i++)
         {
-            decode = range;
+            decode[i] = i < providedDecode.Length ? providedDecode[i] : range[i];
         }
 
         byte[] samples = StreamDecoder.Decode(stream);
-        return new SampledFunction(samples, bps, size, inCount, outCount, domain, encode, decode);
+        return new SampledFunction(samples, bps, size, inCount, outCount, domain, encode, decode, range);
     }
 
     public override double[] Eval(double[] input)
@@ -313,12 +317,17 @@ internal sealed class SampledFunction : PdfFunction
             }
         }
 
-        // Apply the Decode array to map [0,1] sample space onto the output range.
+        // Apply the Decode array to map [0,1] sample space onto the output range,
+        // then clamp to /Range (PDF 32000-1 §7.10.2).
         for (int c = 0; c < _outCount; c++)
         {
             double d0 = _decode.Length > c * 2 ? _decode[c * 2] : 0;
             double d1 = _decode.Length > c * 2 + 1 ? _decode[c * 2 + 1] : 1;
             output[c] = d0 + output[c] * (d1 - d0);
+            if (_range.Length > c * 2 + 1)
+            {
+                output[c] = Clamp(output[c], _range[c * 2], _range[c * 2 + 1]);
+            }
         }
         return output;
     }

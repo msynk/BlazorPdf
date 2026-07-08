@@ -25,39 +25,58 @@ The engine is being built incrementally, module by module.
 | Raster images                           | `Core/Render/PdfImage.cs` + `PngEncoder.cs`       | Done   |
 | Axial/radial shadings                   | `Core/Render/CssShadingBuilder.cs`                | Done   |
 | Shading pattern fills                   | `HtmlRenderer` `scn` shading patterns (CSS gradients) | Done |
-| Tiling pattern fills                    | `HtmlRenderer` (falls back to solid color)        | Partial |
+| Tiling pattern fills                    | `HtmlRenderer` `RunPatternCell` (replayed cells)  | Done   |
+| Baseline JPEG decoder (CMYK/masked)     | `Core/Filters/JpegDecoder.cs`                     | Done   |
+| Optional content groups (layers)        | `HtmlRenderer` `BDC /OC … EMC`                    | Done   |
+| Damaged-file recovery                   | `XRef` object-scan rebuild + `PdfDocument.Warnings` | Done |
 | Blend modes (`BM`)                      | `HtmlRenderer` `mix-blend-mode`                   | Done   |
 | CCITTFaxDecode                          | `Core/Filters/CcittFaxDecoder.cs` (G3/G4)         | Done   |
-| Encryption (standard handler)           | `Core/Security/*` (RC4, AES-128/256, R2–R6)       | Done   |
+| Encryption (standard handler)           | `Core/Security/*` (RC4, AES-128/256, R2–R6, user/owner password, managed crypto for WASM) | Done |
 | Annotations                             | `HtmlRenderer` annotation pass (appearances + links) | Done |
 | Embedded font programs                  | `PdfFont` + `@font-face` emission (TrueType/OpenType) | Done |
 | Page rendering                          | `Core/Render/HtmlRenderer.cs`                     | Mostly |
 
-Working today: parsing (tables + xref streams + object streams), Flate/LZW/ASCII
-/RunLength/CCITT(G3/G4) filters with predictors, the page tree, content-stream
-operators, simple and Type0 font text extraction (ToUnicode + WinAnsi + Core-14
-metrics), HTML output with vector paths (CSS `clip-path`) and selectable text
-(positioned `<span>`s), embedded TrueType/
-OpenType fonts (emitted as `@font-face`) with serif/sans/mono substitution and
-bold/italic otherwise, image XObjects and inline images (RGB/Gray/CMYK/Indexed/
-Separation color, JPEG passthrough, CCITT fax, soft masks), form XObjects,
-axial/radial shadings (`sh`) and shading pattern fills (`scn`) as CSS
-gradients, separable blend modes (`BM`), clipping paths
-(`W`/`W*`), decryption of documents secured with the standard handler (RC4 and
-AES, revisions 2–6, empty user password), and annotations (appearance-stream
-rendering plus clickable URI links).
+Working today: parsing (tables + xref streams + object streams) with **damaged-file
+recovery** (a corrupt cross-reference table is rebuilt by scanning the file, with
+diagnostics on `PdfDocument.Warnings`), Flate/LZW/ASCII/RunLength/CCITT(G3/G4,
+including 2-D vertical modes and EOL/K>0) filters with predictors, the page tree,
+content-stream operators (with per-operator error recovery), simple and Type0 font
+text extraction (ToUnicode + WinAnsi + Core-14 metrics), HTML output with vector
+paths (CSS `clip-path`) and selectable text (positioned `<span>`s, including
+invisible OCR-layer text), embedded TrueType/OpenType fonts (emitted once per
+document as `@font-face`) with serif/sans/mono substitution and bold/italic
+otherwise, image XObjects and inline images (RGB/Gray/CMYK/Indexed/Separation/Lab
+color, a baseline **JPEG decoder** for CMYK/masked images plus browser passthrough
+for plain JPEG, CCITT fax, `/Decode`, colour-key and stencil `/Mask`, soft masks),
+form XObjects (with `/BBox` clipping), axial/radial shadings (`sh`) and shading
+pattern fills (`scn`) as CSS gradients, tiling patterns, optional content groups
+(layer visibility), separable blend modes (`BM`), clipping paths (`W`/`W*`),
+decryption of documents secured with the standard handler (RC4 and AES, revisions
+2–6, **user and owner password verification**, working in Blazor WebAssembly via a
+managed MD5/AES implementation), and annotations (appearance-stream rendering plus
+scheme-whitelisted clickable URI links).
 
-Known limitations (degrade gracefully - pages still load):
+## Limitations
+
+These degrade gracefully — affected pages still load:
+
 - **Bare CFF/Type1 embedded programs**: text renders via substitute fonts with
-  correct Unicode rather than the embedded glyph outlines (a browser cannot load
-  a bare CFF/PFB without OpenType wrapping and a synthetic cmap).
-- **JBIG2 and JPEG2000 images**: not decoded (these are large, specialized
-  codecs - an arithmetic coder + region/symbol decoding for JBIG2, a wavelet/
-  EBCOT pipeline for JPEG2000); such images are skipped rather than rendered.
+  correct Unicode rather than the embedded glyph outlines (a browser cannot load a
+  bare CFF/PFB without OpenType wrapping and a synthetic cmap). Embedded
+  TrueType/OpenType fonts are emitted directly.
+- **JBIG2 and JPEG2000 images**: not decoded (large, specialized codecs); such
+  images are skipped rather than rendered as noise.
+- **Progressive JPEG with CMYK**: the built-in decoder handles baseline sequential
+  DCT; progressive JPEGs fall back to browser passthrough (fine for RGB, wrong for
+  CMYK).
+- **Two-circle radial shadings** are approximated with a single-circle CSS radial
+  gradient; **knockout transparency groups** are treated as non-knockout; and
+  **anisotropic stroke widths** under a skewed CTM use SVG's uniform scaling.
+- **CJK / composite fonts without ToUnicode** may not extract text without the
+  predefined Adobe CMap set.
 
-Not yet implemented: embedded font glyph outlines (text uses host/substitute fonts),
-JPEG2000/CCITT/JBIG2 image codecs, tiling/shading pattern fills (`scn`
-patterns), and blend modes.
+Browser support: text selection highlighting uses the CSS Custom Highlight API
+where available and falls back to `<mark>` overlays otherwise.
 
 ## Component
 

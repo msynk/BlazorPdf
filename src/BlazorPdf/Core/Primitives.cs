@@ -194,6 +194,18 @@ public static class Primitives
     /// <summary>Marks a circular indirect reference encountered during fetch.</summary>
     public static readonly object CircularRef = new CircularRefObject();
 
+    /// <summary>
+    /// Reads a numeric value, transparently resolving an indirect reference
+    /// through <paramref name="xref"/>. Numbers in PDF arrays (/Coords, /Domain,
+    /// /C0, /Matrix, rectangles, /W…) may be given indirectly; use this instead
+    /// of a bare <c>is double</c> check so those cases don't silently read 0.
+    /// </summary>
+    public static double ResolveNumber(IXRef? xref, object? obj, double fallback = 0)
+    {
+        object? v = xref is not null ? xref.FetchIfRef(obj) : obj;
+        return v is double d ? d : fallback;
+    }
+
     public static bool IsName(object? obj) => obj is Name;
     public static bool IsName(object? obj, string value) => obj is Name n && n.Value == value;
     public static bool IsCmd(object? obj) => obj is Cmd;

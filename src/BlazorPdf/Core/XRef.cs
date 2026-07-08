@@ -1,5 +1,6 @@
 // Cross-reference table and stream reader.
 
+using System.Linq;
 using System.Text;
 using BlazorPdf.Core.Filters;
 using BlazorPdf.Core.Security;
@@ -30,9 +31,19 @@ public sealed class XRef : IXRef
 
     private StandardSecurityHandler? _security;
     private int _encryptRefNum = -1;
+    private bool _scanned; // true once RebuildByScanning has run (guards re-entry)
 
     /// <summary>The combined trailer dictionary (newest section wins).</summary>
     public Dict? Trailer { get; private set; }
+
+    /// <summary>The password to try for an encrypted document (user or owner).</summary>
+    public string? Password { get; set; }
+
+    /// <summary>
+    /// Non-fatal problems encountered while parsing (bad xref sections, recovery
+    /// by full-scan, etc.). Populated when the file was damaged but still opened.
+    /// </summary>
+    public List<string> Warnings { get; } = new();
 
     public XRef(byte[] buffer) => _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
 
@@ -42,15 +53,47 @@ public sealed class XRef : IXRef
     /// <summary>Parses the cross-reference data starting from the file's <c>startxref</c>.</summary>
     public void Parse()
     {
+        try
+        {
+            ReadXRefChain();
+        }
+        catch (PdfUnsupportedEncryptionException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Cross-reference parsing failed ({ex.Message}); rebuilding by scanning objects.");
+        }
+
+        // If the classic/stream path did not yield a usable catalog, brute-force
+        // scan the file for objects and rebuild — matching pdf.js recovery.
+        if (Trailer is null || Root is null)
+        {
+            RebuildByScanning();
+        }
+
+        if (Trailer is null)
+        {
+            throw new PdfFormatException("No trailer found and recovery failed.");
+        }
+
+        SetupEncryption();
+    }
+
+    private void ReadXRefChain()
+    {
         int start = FindStartXRef();
         if (start < 0)
         {
-            throw new PdfFormatException("Could not locate 'startxref'.");
+            Warnings.Add("Could not locate 'startxref'.");
+            return; // fall through to recovery
         }
 
         var queue = new Queue<int>();
         var visited = new HashSet<int>();
         queue.Enqueue(start);
+        bool firstSection = true;
 
         while (queue.Count > 0)
         {
@@ -60,7 +103,28 @@ public sealed class XRef : IXRef
                 continue;
             }
 
-            Dict? sectionTrailer = ReadSection(offset);
+            Dict? sectionTrailer;
+            try
+            {
+                sectionTrailer = ReadSection(offset);
+            }
+            catch (Exception ex)
+            {
+                // Tolerate a broken /Prev or /XRefStm section: keep the entries
+                // already parsed. Only the very first section failing forces
+                // full recovery (handled by the Trailer/Root check in Parse).
+                Warnings.Add($"Skipping damaged xref section at {offset} ({ex.Message}).");
+                if (firstSection)
+                {
+                    throw;
+                }
+                continue;
+            }
+            finally
+            {
+                firstSection = false;
+            }
+
             if (sectionTrailer is null)
             {
                 continue;
@@ -77,13 +141,6 @@ public sealed class XRef : IXRef
                 queue.Enqueue((int)prev);
             }
         }
-
-        if (Trailer is null)
-        {
-            throw new PdfFormatException("No trailer found.");
-        }
-
-        SetupEncryption();
     }
 
     private void SetupEncryption()
@@ -111,7 +168,16 @@ public sealed class XRef : IXRef
             id0 = s.Bytes;
         }
 
-        _security = StandardSecurityHandler.TryCreate(encDict, id0);
+        _security = StandardSecurityHandler.TryCreate(encDict, id0, Password);
+
+        // A declared /Encrypt with no usable handler means every string and
+        // stream would be returned as ciphertext and the file would "load" as
+        // garbage. Fail loudly with a typed exception instead.
+        if (_security is null)
+        {
+            throw new PdfUnsupportedEncryptionException(
+                "The document is encrypted with an unsupported security handler or revision.");
+        }
     }
 
     private Dict? ReadSection(int offset)
@@ -203,6 +269,12 @@ public sealed class XRef : IXRef
         int w0 = ToInt(w[0]);
         int w1 = ToInt(w[1]);
         int w2 = ToInt(w[2]);
+        // Negative widths would drive ReadField into IndexOutOfRange; oversized
+        // widths would overflow the long accumulator. Each field fits in 8 bytes.
+        if (w0 < 0 || w1 < 0 || w2 < 0 || w0 > 8 || w1 > 8 || w2 > 8)
+        {
+            throw new PdfFormatException("Invalid /W widths in xref stream.");
+        }
         int entryLen = w0 + w1 + w2;
         if (entryLen == 0)
         {
@@ -237,7 +309,11 @@ public sealed class XRef : IXRef
                 pos += entryLen;
 
                 int num = objStart + i;
-                if (_entries.ContainsKey(num))
+                // In a hybrid-reference file the classic section marks compressed
+                // objects as free; the parallel /XRefStm carries their real
+                // entries. Let a cross-reference stream override an existing *free*
+                // entry (but never a real one, preserving newer-section priority).
+                if (_entries.TryGetValue(num, out var existing) && existing.Type != EntryType.Free)
                 {
                     continue;
                 }
@@ -311,6 +387,22 @@ public sealed class XRef : IXRef
         {
             return null;
         }
+
+        // Validate the "num gen obj" header at the offset. A mismatch means the
+        // xref offset is wrong (off-by-N, damaged table); rebuild by scanning
+        // once and retry from the corrected offset rather than silently returning
+        // the wrong object.
+        if (!HeaderMatches(entry.Field2, reference.Num) && !_scanned)
+        {
+            _scanned = true;
+            RebuildByScanning();
+            if (_entries.TryGetValue(reference.Num, out var corrected)
+                && corrected.Type == EntryType.Uncompressed)
+            {
+                entry = corrected;
+            }
+        }
+
         var parser = new Parser(new Lexer(new PdfStream(_buffer, entry.Field2)), this);
         object? obj = parser.GetObj();
 
@@ -396,6 +488,11 @@ public sealed class XRef : IXRef
         int first = ToInt(dict.Get("First"));
         byte[] data = StreamDecoder.Decode(stream);
 
+        // The header is N pairs of "objNum offset"; each needs at least ~4 bytes.
+        // Clamp the declared /N against the decoded length so a hostile /N cannot
+        // drive a huge allocation or multi-billion-iteration loop.
+        n = Math.Clamp(n, 0, data.Length / 4);
+
         // Header: N pairs of "objNum offset".
         var headerLexer = new Lexer(new PdfStream(data));
         var offsets = new List<int>(n);
@@ -420,6 +517,217 @@ public sealed class XRef : IXRef
 
         return result;
     }
+
+    // ----- Recovery (pdf.js XRef.indexObjects equivalent) -----
+
+    private bool HeaderMatches(int offset, int num)
+    {
+        try
+        {
+            var lexer = new Lexer(new PdfStream(_buffer, offset));
+            return lexer.GetObj() is double d && (int)d == num;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void RebuildByScanning()
+    {
+        _scanned = true;
+        Warnings.Add("Rebuilding the cross-reference table by scanning the file.");
+        _entries.Clear();
+        _cache.Clear();
+        _objStmCache.Clear();
+
+        ScanForObjects();
+        IndexObjectStreams();
+        RecoverTrailer();
+    }
+
+    private void ScanForObjects()
+    {
+        int n = _buffer.Length;
+        var objKw = "obj"u8.ToArray();
+        int i = 0;
+        while (i < n)
+        {
+            // A header is "<num> <gen> obj" at a token boundary.
+            if (!IsDigit(_buffer[i]) || (i > 0 && !IsWhiteOrDelimiter(_buffer[i - 1])))
+            {
+                i++;
+                continue;
+            }
+
+            int startNum = i;
+            int num = ReadInt(ref i, n);
+            int p = i;
+            SkipWhite(ref p, n);
+            if (p == i || p >= n || !IsDigit(_buffer[p]))
+            {
+                i = startNum + 1;
+                continue;
+            }
+            int gen = ReadInt(ref p, n);
+            int q = p;
+            SkipWhite(ref q, n);
+            if (q == p || !MatchesAt(q, objKw))
+            {
+                i = startNum + 1;
+                continue;
+            }
+
+            // Later definitions of an object number supersede earlier ones
+            // (incremental-update semantics).
+            _entries[num] = new Entry { Type = EntryType.Uncompressed, Field2 = startNum, Field3 = gen };
+            i = q + objKw.Length;
+        }
+    }
+
+    private void IndexObjectStreams()
+    {
+        foreach (var (streamNum, entry) in _entries.ToList())
+        {
+            if (entry.Type != EntryType.Uncompressed)
+            {
+                continue;
+            }
+            object? obj;
+            try
+            {
+                obj = FetchUncompressed(new Ref(streamNum, entry.Field3), entry);
+            }
+            catch
+            {
+                continue;
+            }
+            if (obj is not PdfStream s || s.Dict is null || !Primitives.IsName(s.Dict.Get("Type"), "ObjStm"))
+            {
+                continue;
+            }
+
+            byte[] data;
+            try
+            {
+                data = StreamDecoder.Decode(s);
+            }
+            catch
+            {
+                continue;
+            }
+            int cnt = Math.Clamp(ToInt(s.Dict.Get("N")), 0, data.Length / 4);
+            var lexer = new Lexer(new PdfStream(data));
+            for (int idx = 0; idx < cnt; idx++)
+            {
+                if (lexer.GetObj() is not double dn)
+                {
+                    break;
+                }
+                _ = lexer.GetObj(); // offset (unused for positional access)
+                int objNum = (int)dn;
+                // Don't override a directly-scanned (uncompressed) definition.
+                if (!_entries.ContainsKey(objNum))
+                {
+                    _entries[objNum] = new Entry { Type = EntryType.Compressed, Field2 = streamNum, Field3 = idx };
+                }
+            }
+        }
+    }
+
+    private void RecoverTrailer()
+    {
+        if (Root is not null)
+        {
+            return; // an existing trailer is already usable
+        }
+
+        Dict? found = FindTrailerDict();
+        if (found is not null)
+        {
+            MergeTrailer(found);
+            if (Root is not null)
+            {
+                return;
+            }
+        }
+
+        // No usable trailer: locate the /Type /Catalog object directly.
+        foreach (var (num, entry) in _entries)
+        {
+            if (entry.Type != EntryType.Uncompressed)
+            {
+                continue;
+            }
+            object? obj;
+            try
+            {
+                obj = Fetch(new Ref(num, entry.Field3));
+            }
+            catch
+            {
+                continue;
+            }
+            if (obj is Dict d && Primitives.IsName(d.Get("Type"), "Catalog"))
+            {
+                Trailer ??= new Dict(this);
+                Trailer.Set("Root", new Ref(num, entry.Field3));
+                Warnings.Add($"Recovered the document catalog from object {num}.");
+                return;
+            }
+        }
+    }
+
+    private Dict? FindTrailerDict()
+    {
+        var kw = "trailer"u8.ToArray();
+        Dict? result = null;
+        for (int i = 0; i + kw.Length <= _buffer.Length; i++)
+        {
+            if (!MatchesAt(i, kw))
+            {
+                continue;
+            }
+            try
+            {
+                var parser = new Parser(new Lexer(new PdfStream(_buffer, i + kw.Length)), this, allowStreams: false);
+                if (parser.GetObj() is Dict d)
+                {
+                    result = d; // keep the last (most recent) trailer
+                }
+            }
+            catch
+            {
+                // Ignore an unparseable trailer candidate.
+            }
+        }
+        return result;
+    }
+
+    private int ReadInt(ref int i, int n)
+    {
+        int value = 0;
+        while (i < n && IsDigit(_buffer[i]))
+        {
+            value = value * 10 + (_buffer[i] - '0');
+            i++;
+        }
+        return value;
+    }
+
+    private void SkipWhite(ref int i, int n)
+    {
+        while (i < n && IsWhite(_buffer[i]))
+        {
+            i++;
+        }
+    }
+
+    private static bool IsDigit(byte b) => b is >= (byte)'0' and <= (byte)'9';
+    private static bool IsWhite(byte b) => b is 0x20 or 0x09 or 0x0A or 0x0C or 0x0D or 0x00;
+    private static bool IsWhiteOrDelimiter(byte b)
+        => IsWhite(b) || b is (byte)'<' or (byte)'>' or (byte)'[' or (byte)']'
+            or (byte)'(' or (byte)')' or (byte)'/' or (byte)'{' or (byte)'}';
 
     private int FindStartXRef()
     {

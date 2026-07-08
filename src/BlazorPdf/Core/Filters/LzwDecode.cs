@@ -71,21 +71,25 @@ internal static class LzwDecode
             {
                 entry = table[code];
             }
-            else if (previous is not null)
+            else if (code == table.Count && previous is not null)
             {
-                // Special case: code not yet in table (KwKwK).
+                // KwKwK: the code refers to the entry we are about to add, which
+                // is `previous` plus its own first byte. Only the immediately-next
+                // code is valid here; any larger code is corrupt.
                 entry = new byte[previous.Length + 1];
                 Array.Copy(previous, entry, previous.Length);
                 entry[^1] = previous[0];
             }
             else
             {
-                break; // malformed
+                break; // corrupt code: bail with the output decoded so far
             }
 
             output.AddRange(entry);
 
-            if (previous is not null)
+            // The dictionary never exceeds 4096 entries (12-bit codes); stop
+            // adding once full instead of growing unbounded.
+            if (previous is not null && table.Count < 4096)
             {
                 var newEntry = new byte[previous.Length + 1];
                 Array.Copy(previous, newEntry, previous.Length);

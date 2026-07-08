@@ -31,21 +31,44 @@ internal static class Predictor
 
     private static byte[] ApplyTiff(byte[] data, int colors, int bpc, int columns, int rowBytes)
     {
-        // Only the common byte-aligned case (bpc >= 8) is handled here.
-        if (bpc < 8 || rowBytes == 0)
+        if (rowBytes == 0)
         {
             return data;
         }
 
-        int bytesPerSample = bpc / 8;
-        int rows = data.Length / rowBytes;
         var output = new byte[data.Length];
         Array.Copy(data, output, data.Length);
+        int rows = data.Length / rowBytes;
+        int samplesPerRow = columns * colors;
 
+        // Sub-byte samples (bpc 1/2/4): unpack each sample, add the same-color
+        // sample from the previous pixel (mod 2^bpc), and repack in place.
+        if (bpc < 8)
+        {
+            int mask = (1 << bpc) - 1;
+            var prev = new int[colors];
+            for (int row = 0; row < rows; row++)
+            {
+                int rowStart = row * rowBytes;
+                Array.Clear(prev);
+                int bitPos = 0;
+                for (int s = 0; s < samplesPerRow; s++)
+                {
+                    int color = s % colors;
+                    int sample = ReadSample(output, rowStart, bitPos, bpc);
+                    int value = (sample + prev[color]) & mask;
+                    WriteSample(output, rowStart, bitPos, bpc, value);
+                    prev[color] = value;
+                    bitPos += bpc;
+                }
+            }
+            return output;
+        }
+
+        int bytesPerSample = bpc / 8;
         for (int row = 0; row < rows; row++)
         {
             int rowStart = row * rowBytes;
-            int samplesPerRow = columns * colors;
             for (int sample = colors; sample < samplesPerRow; sample++)
             {
                 int cur = rowStart + sample * bytesPerSample;
@@ -64,6 +87,42 @@ internal static class Predictor
             }
         }
         return output;
+    }
+
+    private static int ReadSample(byte[] data, int byteBase, int bitPos, int bpc)
+    {
+        int v = 0;
+        for (int i = 0; i < bpc; i++)
+        {
+            int abs = bitPos + i;
+            int bytePos = byteBase + (abs >> 3);
+            int bit = bytePos < data.Length ? (data[bytePos] >> (7 - (abs & 7))) & 1 : 0;
+            v = (v << 1) | bit;
+        }
+        return v;
+    }
+
+    private static void WriteSample(byte[] data, int byteBase, int bitPos, int bpc, int value)
+    {
+        for (int i = 0; i < bpc; i++)
+        {
+            int abs = bitPos + i;
+            int bytePos = byteBase + (abs >> 3);
+            if (bytePos >= data.Length)
+            {
+                return;
+            }
+            int bit = (value >> (bpc - 1 - i)) & 1;
+            int shift = 7 - (abs & 7);
+            if (bit != 0)
+            {
+                data[bytePos] |= (byte)(1 << shift);
+            }
+            else
+            {
+                data[bytePos] &= (byte)~(1 << shift);
+            }
+        }
     }
 
     private static byte[] ApplyPng(byte[] data, int bytesPerPixel, int rowBytes)

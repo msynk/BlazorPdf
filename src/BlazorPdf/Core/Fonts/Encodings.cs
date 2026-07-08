@@ -153,6 +153,7 @@ internal static class Encodings
         e[0xE8] = "Edieresis"; e[0xE9] = "Egrave"; e[0xEA] = "Iacute"; e[0xEB] = "Icircumflex";
         e[0xEC] = "Idieresis"; e[0xED] = "Igrave"; e[0xEE] = "Oacute"; e[0xEF] = "Ocircumflex";
         e[0xF1] = "Ograve"; e[0xF2] = "Uacute"; e[0xF3] = "Ucircumflex"; e[0xF4] = "Ugrave";
+        e[0xF0] = "apple"; // MacRoman 0xF0 is the Apple logo glyph.
         e[0xF5] = "dotlessi"; e[0xF6] = "circumflex"; e[0xF7] = "tilde"; e[0xF8] = "macron";
         e[0xF9] = "breve"; e[0xFA] = "dotaccent"; e[0xFB] = "ring"; e[0xFC] = "cedilla";
         e[0xFD] = "hungarumlaut"; e[0xFE] = "ogonek"; e[0xFF] = "caron";
@@ -209,6 +210,7 @@ internal static class Encodings
         {
             e[161 + i] = high[i];
         }
+        e[160] = "Euro"; // Adobe added the Euro glyph at 0xA0.
         // 240 is unused; 241..254 continue the delimiter-extension glyphs.
         string[] tail =
         [

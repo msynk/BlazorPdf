@@ -133,4 +133,10 @@ public sealed class PdfPage
         byte[] decoded = StreamDecoder.Decode(stream);
         output.Write(decoded, 0, decoded.Length);
     }
+
+    /// <summary>
+    /// Extracts the page's visible text (for search or copy) without producing
+    /// HTML. Positioning is approximated, so this is not a layout-faithful dump.
+    /// </summary>
+    public string ExtractText() => Content.TextExtractor.Extract(this, _xref);
 }

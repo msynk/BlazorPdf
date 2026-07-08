@@ -26,6 +26,7 @@ public sealed class GraphicsState
     public double DashPhase { get; set; }
     public int LineCap { get; set; }            // 0 butt, 1 round, 2 square
     public int LineJoin { get; set; }           // 0 miter, 1 round, 2 bevel
+    public double MiterLimit { get; set; } = 10.0; // PDF default 10 (SVG default is 4)
 
     // Text state.
     public PdfFont? Font { get; set; }
@@ -54,6 +55,7 @@ public sealed class GraphicsState
         DashPhase = DashPhase,
         LineCap = LineCap,
         LineJoin = LineJoin,
+        MiterLimit = MiterLimit,
         Font = Font,
         FontResourceName = FontResourceName,
         FontSize = FontSize,

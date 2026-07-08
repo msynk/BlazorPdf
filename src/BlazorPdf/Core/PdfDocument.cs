@@ -29,6 +29,12 @@ public sealed class PdfDocument
     /// <summary><c>true</c> when the trailer declares an <c>/Encrypt</c> dictionary.</summary>
     public bool IsEncrypted => _xref.Trailer?.Has("Encrypt") == true;
 
+    /// <summary>
+    /// Non-fatal diagnostics from parsing (e.g. the file was damaged and its
+    /// cross-reference table had to be rebuilt by scanning). Empty for clean files.
+    /// </summary>
+    public IReadOnlyList<string> Warnings => _xref.Warnings;
+
     /// <summary>The document's pages in order.</summary>
     public IReadOnlyList<PdfPage> Pages => _pages ??= BuildPages();
 
@@ -65,11 +71,19 @@ public sealed class PdfDocument
         _pageLabels ??= PageLabelBuilder.Build(_xref, Catalog, PageCount);
 
     /// <summary>Parses <paramref name="bytes"/> into a document model.</summary>
-    public static PdfDocument Load(byte[] bytes)
+    public static PdfDocument Load(byte[] bytes) => Load(bytes, null);
+
+    /// <summary>
+    /// Parses <paramref name="bytes"/> into a document model, using
+    /// <paramref name="password"/> to decrypt an encrypted document (tried as
+    /// both the user and owner password). Throws <see cref="PdfPasswordException"/>
+    /// when a required password is missing or wrong.
+    /// </summary>
+    public static PdfDocument Load(byte[] bytes, string? password)
     {
         ArgumentNullException.ThrowIfNull(bytes);
 
-        var xref = new XRef(bytes);
+        var xref = new XRef(bytes) { Password = password };
         xref.Parse();
 
         var document = new PdfDocument(xref)
@@ -104,12 +118,12 @@ public sealed class PdfDocument
         public Dict? Resources { get; init; }
         public int? Rotate { get; init; }
 
-        public InheritedAttributes With(Dict node)
+        public InheritedAttributes With(Dict node, IXRef xref)
         {
             return new InheritedAttributes
             {
-                MediaBox = ReadRectangle(node.Get("MediaBox")) ?? MediaBox,
-                CropBox = ReadRectangle(node.Get("CropBox")) ?? CropBox,
+                MediaBox = ReadRectangle(node.Get("MediaBox"), xref) ?? MediaBox,
+                CropBox = ReadRectangle(node.Get("CropBox"), xref) ?? CropBox,
                 Resources = node.Get("Resources") as Dict ?? Resources,
                 Rotate = node.Get("Rotate") is double r ? NormalizeRotation((int)r) : Rotate,
             };
@@ -121,10 +135,13 @@ public sealed class PdfDocument
     {
         if (depth > 64)
         {
-            throw new PdfFormatException("Page tree nesting too deep.");
+            // Degrade rather than abort the whole document: skip this subtree and
+            // warn, so the rest of the page tree still loads.
+            _xref.Warnings.Add("Page tree nesting too deep; skipping a subtree.");
+            return;
         }
 
-        InheritedAttributes current = inherited.With(node);
+        InheritedAttributes current = inherited.With(node, _xref);
         object? typeObj = node.Get("Type");
 
         // A node with /Kids is an interior /Pages node; otherwise it's a leaf page.
@@ -132,11 +149,27 @@ public sealed class PdfDocument
         {
             foreach (var kid in kids)
             {
+                // Skip kids already seen: duplicate /Kids refs would otherwise
+                // duplicate pages, and shared-subtree DAGs would traverse
+                // exponentially. Cyclic kids are skipped, not thrown, so the
+                // rest of the tree still loads.
+                if (kid is Ref kr && !visited.Add(kr.Num))
+                {
+                    continue;
+                }
                 if (_xref.FetchIfRef(kid) is Dict child)
                 {
                     Traverse(child, current, pages, visited, depth + 1);
                 }
             }
+            return;
+        }
+
+        // A node explicitly typed /Pages but with no usable /Kids is a damaged
+        // interior node — skip it rather than materializing a phantom page.
+        if (Primitives.IsName(typeObj, "Pages"))
+        {
+            _xref.Warnings.Add("Interior /Pages node has no valid /Kids; skipping.");
             return;
         }
 
@@ -152,16 +185,16 @@ public sealed class PdfDocument
             current.CropBox));
     }
 
-    private static double[]? ReadRectangle(object? value)
+    private static double[]? ReadRectangle(object? value, IXRef xref)
     {
-        if (value is not List<object?> arr || arr.Count < 4)
+        if (xref.FetchIfRef(value) is not List<object?> arr || arr.Count < 4)
         {
             return null;
         }
         var rect = new double[4];
         for (int i = 0; i < 4; i++)
         {
-            if (arr[i] is not double d)
+            if (xref.FetchIfRef(arr[i]) is not double d)
             {
                 return null;
             }

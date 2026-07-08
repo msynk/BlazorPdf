@@ -35,7 +35,8 @@ public class RenderOperatorTests
     public void Cmyk_fill_converts_to_rgb()
     {
         string html = Render("0 1 1 0 k 10 10 50 50 re f");
-        Assert.Contains("rgb(255,0,0)", html);
+        // CMYK red maps through the pdf.js polynomial to a red-orange, not (255,0,0).
+        Assert.Contains("rgb(255,46,23)", html);
     }
 
     [Fact]
@@ -90,6 +91,7 @@ public class RenderOperatorTests
         };
         var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
-        Assert.Contains("rgb(255,0,0)", html);
+        // Full tint -> CMYK (0,1,1,0) -> red-orange through the pdf.js polynomial.
+        Assert.Contains("rgb(255,46,23)", html);
     }
 }

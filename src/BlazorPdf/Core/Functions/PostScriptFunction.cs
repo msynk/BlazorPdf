@@ -11,6 +11,10 @@ namespace BlazorPdf.Core.Functions;
 /// </summary>
 internal sealed class PostScriptFunction : PdfFunction
 {
+    // pdf.js caps the operand stack at 100; a well-formed calculator function
+    // never needs more, and the cap bounds copy/roll/dup against DoS.
+    private const int MaxStack = 100;
+
     private readonly List<object> _program; // doubles, string operators, and nested List<object> blocks
     private readonly double[] _domain;
     private readonly double[] _range;
@@ -116,6 +120,8 @@ internal sealed class PostScriptFunction : PdfFunction
                 case "le": Cmp(stack, (a, b) => a <= b); break;
                 case "and": Bin(stack, (a, b) => (double)((long)a & (long)b)); break;
                 case "or": Bin(stack, (a, b) => (double)((long)a | (long)b)); break;
+                case "xor": Bin(stack, (a, b) => (double)((long)a ^ (long)b)); break;
+                case "bitshift": Bin(stack, (a, b) => { int s = (int)b; long v = (long)a; return s >= 0 ? (double)(v << s) : (double)(v >> -s); }); break;
                 case "not": Un(stack, a => a != 0 ? 0 : 1); break;
                 case "true": stack.Push(1); break;
                 case "false": stack.Push(0); break;
@@ -160,7 +166,9 @@ internal sealed class PostScriptFunction : PdfFunction
     private static void DoCopy(Stack<double> s)
     {
         int n = (int)Pop(s);
-        if (n <= 0) return;
+        // Reject unbounded / out-of-range counts: copy only duplicates elements
+        // that exist, and must not push the stack past the operand-stack cap.
+        if (n <= 0 || n > s.Count || s.Count + n > MaxStack) return;
         var arr = s.ToArray(); // top first
         for (int i = n - 1; i >= 0; i--)
         {
@@ -182,7 +190,9 @@ internal sealed class PostScriptFunction : PdfFunction
     {
         int j = (int)Pop(s);
         int n = (int)Pop(s);
-        if (n <= 0) return;
+        // Bound n by the actual stack depth so a hostile count can't allocate a
+        // 2-billion-element array or spin an enormous loop.
+        if (n <= 0 || n > s.Count) return;
         var items = new double[n];
         for (int i = n - 1; i >= 0; i--)
         {

@@ -17,7 +17,9 @@ public class ColorSpaceTests
 
     [Fact]
     public void DeviceCmyk_to_red()
-        => Assert.Equal(((byte)255, (byte)0, (byte)0), ColorSpace.Cmyk.GetRgb([0, 1, 1, 0]));
+        // CMYK red is not a pure sRGB primary: the pdf.js polynomial fit yields a
+        // realistic red-orange (matches Acrobat/pdf.js far better than (1-c)(1-k)).
+        => Assert.Equal(((byte)255, (byte)46, (byte)23), ColorSpace.Cmyk.GetRgb([0, 1, 1, 0]));
 
     [Fact]
     public void Device_default_components_are_zero()

@@ -347,11 +347,14 @@ public sealed class Lexer
                     continue;
                 }
             }
-            sb.Append((char)ch);
-            if (sb.Length > 127)
+            if (sb.Length >= 127)
             {
-                throw new PdfFormatException("Name token too long.");
+                // The spec limits names to 127 bytes; rather than aborting the
+                // whole content stream on an overlong name, truncate it and keep
+                // consuming the remaining name characters so tokenizing resyncs.
+                continue;
             }
+            sb.Append((char)ch);
         }
         return Name.Get(sb.ToString());
     }

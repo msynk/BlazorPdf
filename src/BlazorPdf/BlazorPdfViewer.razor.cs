@@ -16,6 +16,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 {
     private PdfSource? _source;
     private PdfDocument? _document;
+    private Core.Render.PdfFontStore? _fontStore;
     private string _status = "Idle.";
     private bool _loading;
 
@@ -59,8 +60,24 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     /// <summary>Raised when a document has finished loading.</summary>
     [Parameter] public EventCallback OnDocumentLoaded { get; set; }
 
+    /// <summary>Raised (with the 1-based page number) when the focused page changes.</summary>
+    [Parameter] public EventCallback<int> OnPageChanged { get; set; }
+
     /// <summary>Raised when loading or rendering fails, with the error message.</summary>
     [Parameter] public EventCallback<string> OnError { get; set; }
+
+    /// <summary>
+    /// Raised after a document loads with any non-fatal diagnostics (e.g. the
+    /// file was damaged and its cross-reference table had to be rebuilt).
+    /// </summary>
+    [Parameter] public EventCallback<IReadOnlyList<string>> OnWarnings { get; set; }
+
+    /// <summary>
+    /// Invoked when an encrypted document needs a password. Return the password to
+    /// retry, or <c>null</c>/empty to cancel. If unset, a password error surfaces
+    /// through <see cref="OnError"/> instead.
+    /// </summary>
+    [Parameter] public Func<Task<string?>>? OnPasswordRequested { get; set; }
 
     /// <summary>The number of pages currently rendered.</summary>
     public int PageCount => _pages.Count;
@@ -111,6 +128,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         _pageWidths.Clear();
         _pageHeights.Clear();
         _document = null;
+        _fontStore = null; // fresh embedded-font store per document
         _searchTotal = 0;
         _searchIndex = -1;
         _outline = Array.Empty<OutlineItem>();
@@ -136,7 +154,21 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
         try
         {
-            _document = PdfDocument.Load(_source.Bytes);
+            try
+            {
+                _document = PdfDocument.Load(_source.Bytes, _source.Password);
+            }
+            catch (PdfPasswordException) when (OnPasswordRequested is not null)
+            {
+                // Ask the host for a password and retry once. The callback returns
+                // null to cancel.
+                string? entered = await OnPasswordRequested();
+                if (string.IsNullOrEmpty(entered))
+                {
+                    throw;
+                }
+                _document = PdfDocument.Load(_source.Bytes, entered);
+            }
             PreparePages();
             try
             {
@@ -148,6 +180,10 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             }
             _status = $"{_document.PageCount} page(s).";
             _spyPending = true;
+            if (_document.Warnings.Count > 0 && OnWarnings.HasDelegate)
+            {
+                await OnWarnings.InvokeAsync(_document.Warnings);
+            }
             await OnDocumentLoaded.InvokeAsync();
         }
         catch (Exception ex)
@@ -198,8 +234,31 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private MarkupString RenderPageContent(int index)
     {
         var page = _document!.Pages[index];
-        string html = new Core.Render.HtmlRenderer(page, _document.XRef, _rotation).Render();
+        _fontStore ??= new Core.Render.PdfFontStore();
+        string html = new Core.Render.HtmlRenderer(page, _document.XRef, _fontStore, _rotation).Render();
         return new MarkupString(html);
+    }
+
+    /// <summary>Renders a single page (1-based) to self-contained HTML, or an
+    /// empty string when no document is loaded or the number is out of range.</summary>
+    public string RenderPageHtml(int pageNumber)
+    {
+        if (_document is null || pageNumber < 1 || pageNumber > _document.PageCount)
+        {
+            return string.Empty;
+        }
+        return new Core.Render.HtmlRenderer(_document.Pages[pageNumber - 1], _document.XRef, _rotation).Render();
+    }
+
+    /// <summary>Extracts the visible text of a single page (1-based) for search or
+    /// copy, or an empty string when unavailable.</summary>
+    public string ExtractPageText(int pageNumber)
+    {
+        if (_document is null || pageNumber < 1 || pageNumber > _document.PageCount)
+        {
+            return string.Empty;
+        }
+        return _document.Pages[pageNumber - 1].ExtractText();
     }
 
     /// <summary>
@@ -276,7 +335,12 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             return;
         }
-        _currentPage = Math.Clamp(pageNumber, 1, _pages.Count);
+        int target = Math.Clamp(pageNumber, 1, _pages.Count);
+        if (target != _currentPage)
+        {
+            _currentPage = target;
+            await OnPageChanged.InvokeAsync(_currentPage);
+        }
         if (_module is not null)
         {
             await _module.InvokeVoidAsync("scrollToPage", _containerRef, _currentPage);
@@ -298,6 +362,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         if (pageNumber != _currentPage && pageNumber >= 1 && pageNumber <= _pages.Count)
         {
             _currentPage = pageNumber;
+            _ = OnPageChanged.InvokeAsync(pageNumber);
             StateHasChanged();
         }
     }
@@ -393,10 +458,37 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private async Task PrintAsync()
     {
-        if (_module is not null && _pages.Count > 0)
+        if (_module is null || _document is null || _pages.Count == 0)
         {
-            await _module.InvokeVoidAsync("printDocument", _containerRef);
+            return;
         }
+
+        // Render every page before printing so the output includes all pages, not
+        // just the ones scrolled into view. Show progress while catching up.
+        bool rendered = false;
+        for (int i = 0; i < _pages.Count; i++)
+        {
+            if (_pages[i] is null)
+            {
+                if (!rendered)
+                {
+                    _loading = true;
+                    _status = "Preparing all pages for printing…";
+                    StateHasChanged();
+                    await Task.Yield();
+                    rendered = true;
+                }
+                _pages[i] = RenderPageContent(i);
+            }
+        }
+        if (rendered)
+        {
+            _loading = false;
+            StateHasChanged();
+            await Task.Yield(); // let the DOM paint the freshly rendered pages
+        }
+
+        await _module.InvokeVoidAsync("printDocument", _containerRef);
     }
 
     private void ToggleThumbnails()
@@ -557,6 +649,14 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         catch (JSDisconnectedException)
         {
             // Circuit already gone; nothing to clean up.
+        }
+        catch (TaskCanceledException)
+        {
+            // Disposal raced an in-flight interop call; safe to ignore.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The module or its reference was already disposed.
         }
         _dotNetRef?.Dispose();
     }

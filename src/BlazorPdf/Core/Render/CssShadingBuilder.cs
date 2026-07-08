@@ -35,16 +35,24 @@ internal static class CssShadingBuilder
         }
         double[] coords = ReadNumbers(shading.Get("Coords"));
 
+        // /Extend [before after]: whether the shading continues past its ends.
+        bool extendBefore = false, extendAfter = false;
+        if (shading.Get("Extend") is List<object?> ext && ext.Count >= 2)
+        {
+            extendBefore = ext[0] is bool b0 && b0;
+            extendAfter = ext[1] is bool b1 && b1;
+        }
+
         return type switch
         {
-            2 when coords.Length >= 4 => BuildAxial(coords, domain, cs, fn, ctm, viewW, viewH),
-            3 when coords.Length >= 6 => BuildRadial(coords, domain, cs, fn, ctm),
+            2 when coords.Length >= 4 => BuildAxial(coords, domain, cs, fn, ctm, viewW, viewH, extendBefore, extendAfter),
+            3 when coords.Length >= 6 => BuildRadial(coords, domain, cs, fn, ctm, extendBefore, extendAfter),
             _ => null,
         };
     }
 
     private static string BuildAxial(double[] c, double[] domain, ColorSpace cs, PdfFunction? fn,
-        Matrix ctm, double viewW, double viewH)
+        Matrix ctm, double viewW, double viewH, bool extendBefore, bool extendAfter)
     {
         var (x0, y0) = ctm.Apply(c[0], c[1]);
         var (x1, y1) = ctm.Apply(c[2], c[3]);
@@ -86,28 +94,61 @@ internal static class CssShadingBuilder
 
         var sb = new StringBuilder();
         sb.Append(string.Create(CultureInfo.InvariantCulture, $"linear-gradient({angleDeg:0.##}deg"));
+        // When an end is not extended, insert a hard transparent stop just outside
+        // the axis so the shading does not bleed a solid colour across the page.
+        if (!extendBefore)
+        {
+            var f = stops[0];
+            sb.Append(string.Create(CultureInfo.InvariantCulture,
+                $",rgba({f.R},{f.G},{f.B},0) {f.Pos:0.##}%"));
+        }
         foreach (var s in stops)
         {
             sb.Append(string.Create(CultureInfo.InvariantCulture, $",rgb({s.R},{s.G},{s.B}) {s.Pos:0.##}%"));
+        }
+        if (!extendAfter)
+        {
+            var l = stops[^1];
+            sb.Append(string.Create(CultureInfo.InvariantCulture,
+                $",rgba({l.R},{l.G},{l.B},0) {l.Pos:0.##}%"));
         }
         sb.Append(')');
         return sb.ToString();
     }
 
-    private static string BuildRadial(double[] c, double[] domain, ColorSpace cs, PdfFunction? fn, Matrix ctm)
+    private static string BuildRadial(double[] c, double[] domain, ColorSpace cs, PdfFunction? fn,
+        Matrix ctm, bool extendBefore, bool extendAfter)
     {
         double scale = ctm.ScaleFactor;
         var (cx, cy) = ctm.Apply(c[3], c[4]);
-        double r = Math.Max(c[5] * scale, 0.01);
+        double r0 = Math.Max(c[2] * scale, 0);      // inner radius
+        double r1 = Math.Max(c[5] * scale, 0.01);   // outer radius
+        // Map colour fraction 0..1 onto the annulus [r0, r1] instead of [0, r1],
+        // so a non-zero inner radius is honoured (a single-circle approximation).
+        double r0Frac = r1 > 0 ? Math.Clamp(r0 / r1, 0, 0.999) : 0;
 
         var sb = new StringBuilder();
         sb.Append(string.Create(CultureInfo.InvariantCulture,
-            $"radial-gradient(circle {r:0.##}px at {cx:0.##}px {cy:0.##}px"));
+            $"radial-gradient(circle {r1:0.##}px at {cx:0.##}px {cy:0.##}px"));
+        // Fill the inner disc: solid first colour if extended, else transparent.
+        var (ir, ig, ib) = SampleRgb(domain, 0, cs, fn);
+        if (r0Frac > 0)
+        {
+            sb.Append(extendBefore
+                ? string.Create(CultureInfo.InvariantCulture, $",rgb({ir},{ig},{ib}) 0%")
+                : string.Create(CultureInfo.InvariantCulture, $",rgba({ir},{ig},{ib},0) {r0Frac * 100:0.##}%"));
+        }
         for (int i = 0; i < StopCount; i++)
         {
             double frac = (double)i / (StopCount - 1);
+            double pos = (r0Frac + frac * (1 - r0Frac)) * 100;
             var (rr, gg, bb) = SampleRgb(domain, frac, cs, fn);
-            sb.Append(string.Create(CultureInfo.InvariantCulture, $",rgb({rr},{gg},{bb}) {frac * 100:0.##}%"));
+            sb.Append(string.Create(CultureInfo.InvariantCulture, $",rgb({rr},{gg},{bb}) {pos:0.##}%"));
+        }
+        if (!extendAfter)
+        {
+            var (er, eg, eb) = SampleRgb(domain, 1, cs, fn);
+            sb.Append(string.Create(CultureInfo.InvariantCulture, $",rgba({er},{eg},{eb},0) 100%"));
         }
         sb.Append(')');
         return sb.ToString();

@@ -15,10 +15,22 @@ public sealed class PdfSource
     /// <summary>An optional display name (e.g. the original file name).</summary>
     public string? FileName { get; private init; }
 
+    /// <summary>The password to open an encrypted document, if known up front.</summary>
+    public string? Password { get; private init; }
+
     /// <summary><c>true</c> when this source carries an in-memory byte buffer.</summary>
     public bool IsBytes => Bytes is not null;
 
     private PdfSource() { }
+
+    /// <summary>Returns a copy of this source that carries <paramref name="password"/>.</summary>
+    public PdfSource WithPassword(string? password) => new()
+    {
+        Bytes = Bytes,
+        Url = Url,
+        FileName = FileName,
+        Password = password,
+    };
 
     /// <summary>Creates a source from an in-memory byte buffer.</summary>
     public static PdfSource FromBytes(byte[] bytes, string? fileName = null)

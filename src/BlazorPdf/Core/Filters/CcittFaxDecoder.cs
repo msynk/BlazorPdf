@@ -22,9 +22,14 @@ internal sealed class CcittParams
 /// </summary>
 internal static class CcittFaxDecoder
 {
-    private const int Pass = -1;
-    private const int Horizontal = -2;
-    private const int Eol = -3;
+    // Mode sentinels MUST sit outside the vertical-mode offset range [-3, 3]:
+    // the vertical codes VL1/VL2/VL3 decode to -1/-2/-3, so using those values as
+    // Pass/Horizontal/Eol markers made every vertical-left code decode as the
+    // wrong mode and corrupted virtually all real G4 images.
+    private const int Pass = 100;
+    private const int Horizontal = 101;
+    private const int Eol = 102;
+    private const int Error = 103;
 
     public static byte[] Decode(byte[] data, CcittParams p)
     {
@@ -46,13 +51,38 @@ internal static class CcittFaxDecoder
                 reader.AlignToByte();
             }
 
+            // For Group 3 (K >= 0), an EOL code may precede each row (with optional
+            // fill bits). For mixed 1D/2D (K > 0) a tag bit after the EOL selects
+            // the coding of the next row: 1 = 1D, 0 = 2D.
+            bool use2D = p.K < 0;
+            if (p.K >= 0)
+            {
+                SkipEol(reader);
+                if (p.K > 0)
+                {
+                    int tag = reader.ReadBit();
+                    if (tag < 0)
+                    {
+                        break;
+                    }
+                    use2D = tag == 0;
+                }
+            }
+
             var curChanges = new List<int>();
-            bool ok = p.K < 0
+            bool ok = use2D
                 ? Decode2DRow(reader, refChanges, curChanges, columns)
                 : Decode1DRow(reader, curChanges, columns);
 
             if (!ok)
             {
+                // Damaged row: try to resynchronize at the next EOL (Group 3) and
+                // continue, matching pdf.js damaged-row recovery. For Group 4 there
+                // are no EOLs, so stop.
+                if (p.K >= 0 && SkipToNextEol(reader))
+                {
+                    continue;
+                }
                 break;
             }
 
@@ -86,6 +116,60 @@ internal static class CcittFaxDecoder
         return output.ToArray();
     }
 
+    /// <summary>Consumes an EOL code (≥11 zero bits then a 1, plus any preceding
+    /// fill bits) if one is present; leaves the reader untouched otherwise.</summary>
+    private static bool SkipEol(BitReader r)
+    {
+        var save = r.Save();
+        int zeros = 0;
+        while (true)
+        {
+            int b = r.ReadBit();
+            if (b < 0)
+            {
+                r.Restore(save);
+                return false;
+            }
+            if (b == 0)
+            {
+                zeros++;
+                continue;
+            }
+            if (zeros >= 11)
+            {
+                return true; // consumed a full EOL
+            }
+            r.Restore(save);
+            return false;
+        }
+    }
+
+    /// <summary>Scans forward to the next EOL for damaged-row resynchronization.</summary>
+    private static bool SkipToNextEol(BitReader r)
+    {
+        int zeros = 0;
+        while (true)
+        {
+            int b = r.ReadBit();
+            if (b < 0)
+            {
+                return false;
+            }
+            if (b == 0)
+            {
+                zeros++;
+            }
+            else
+            {
+                if (zeros >= 11)
+                {
+                    return true;
+                }
+                zeros = 0;
+            }
+        }
+    }
+
     private static bool Decode1DRow(BitReader reader, List<int> changes, int columns)
     {
         int a0 = 0;
@@ -112,7 +196,7 @@ internal static class CcittFaxDecoder
         while (a0 < columns)
         {
             int mode = ReadMode(reader);
-            if (mode == Eol || mode == int.MinValue)
+            if (mode == Eol || mode == Error)
             {
                 return changes.Count > 0;
             }
@@ -198,30 +282,30 @@ internal static class CcittFaxDecoder
     {
         if (r.ReadBit() == 1) return 0;            // V0  : 1
         int b2 = r.ReadBit();
-        if (b2 < 0) return Eol;
+        if (b2 < 0) return Error;
         if (b2 == 1)                               // 01x
         {
             return r.ReadBit() == 1 ? 1 : -1;      // 011=VR1, 010=VL1
         }
         int b3 = r.ReadBit();
-        if (b3 < 0) return Eol;
+        if (b3 < 0) return Error;
         if (b3 == 1) return Horizontal;            // 001
         int b4 = r.ReadBit();
-        if (b4 < 0) return Eol;
+        if (b4 < 0) return Error;
         if (b4 == 1) return Pass;                  // 0001
         int b5 = r.ReadBit();
-        if (b5 < 0) return Eol;
+        if (b5 < 0) return Error;
         if (b5 == 1)                               // 00001x
         {
             return r.ReadBit() == 1 ? 2 : -2;      // 000011=VR2, 000010=VL2
         }
         int b6 = r.ReadBit();
-        if (b6 < 0) return Eol;
+        if (b6 < 0) return Error;
         if (b6 == 1)                               // 000001x
         {
             return r.ReadBit() == 1 ? 3 : -3;      // 0000011=VR3, 0000010=VL3
         }
-        // 0000001... extension / EOL - treat as end of row.
+        // 0000001... is the EOL / EOFB prefix (000000000001); end the row.
         return Eol;
     }
 
@@ -372,6 +456,14 @@ internal static class CcittFaxDecoder
                 _bitPos = 0;
                 _bytePos++;
             }
+        }
+
+        public (int, int) Save() => (_bytePos, _bitPos);
+
+        public void Restore((int BytePos, int BitPos) state)
+        {
+            _bytePos = state.BytePos;
+            _bitPos = state.BitPos;
         }
     }
 }

@@ -17,6 +17,12 @@ public sealed class Parser
     private object _buf1;
     private object _buf2;
 
+    // Guards against hostile deeply-nested arrays/dicts ([[[[…]]]]) that would
+    // otherwise recurse until the process dies with an uncatchable
+    // StackOverflowException. 512 comfortably exceeds any real document.
+    private const int MaxDepth = 512;
+    private int _depth;
+
     public Parser(Lexer lexer, IXRef? xref = null, bool allowStreams = true)
     {
         _lexer = lexer;
@@ -41,6 +47,23 @@ public sealed class Parser
     /// streams) are fully assembled; <c>n g R</c> becomes a <see cref="Ref"/>.
     /// </summary>
     public object GetObj()
+    {
+        if (++_depth > MaxDepth)
+        {
+            _depth--;
+            throw new PdfFormatException("PDF object nesting too deep.");
+        }
+        try
+        {
+            return GetObjCore();
+        }
+        finally
+        {
+            _depth--;
+        }
+    }
+
+    private object GetObjCore()
     {
         object buf1 = _buf1;
 

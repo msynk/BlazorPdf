@@ -21,6 +21,7 @@ public sealed class PdfFont
     private readonly ToUnicodeCMap? _toUnicode;
     private readonly Func<int, double>? _standardWidth; // Core-14 fallback metrics
     private readonly string[]? _encoding;       // simple-font code -> glyph name
+    private CMap _cidEncoding = CMap.Identity;   // Type0 code -> CID mapping
     private double _glyphWidthScale = 1.0;      // maps raw widths to 1000-em (Type3)
 
     /// <summary>Type3 glyph data (glyph procedures), when the font is a Type3 font.</summary>
@@ -47,8 +48,37 @@ public sealed class PdfFont
     /// <summary><c>true</c> when an embeddable font program is available.</summary>
     public bool HasEmbedded => EmbeddedProgram is { Length: > 0 } && EmbeddedFormat is not null;
 
-    /// <summary>A stable CSS family name for the embedded font program.</summary>
-    public string FontFaceFamily => $"bpf{(uint)(BaseFont.GetHashCode() ^ (EmbeddedProgram?.Length ?? 0)):x8}";
+    private string? _fontFaceFamily;
+
+    /// <summary>
+    /// A stable CSS family name derived from a content hash of the embedded font
+    /// program. Using the program bytes (not <c>string.GetHashCode</c>, which is
+    /// randomized per process) keeps <c>@font-face</c> names deterministic and
+    /// avoids cross-font collisions.
+    /// </summary>
+    public string FontFaceFamily => _fontFaceFamily ??= $"bpf{StableFontHash():x8}";
+
+    private uint StableFontHash()
+    {
+        // FNV-1a over the embedded program (or the base-font name when not
+        // embedded). Deterministic across processes and WASM-safe.
+        uint h = 2166136261;
+        if (EmbeddedProgram is { Length: > 0 } p)
+        {
+            foreach (byte b in p)
+            {
+                h = (h ^ b) * 16777619;
+            }
+        }
+        else
+        {
+            foreach (char c in BaseFont)
+            {
+                h = (h ^ (byte)c) * 16777619;
+            }
+        }
+        return h;
+    }
 
     /// <summary>A generic CSS family ("serif"/"sans-serif"/"monospace") inferred from the base font.</summary>
     public string GenericFamily => InferGenericFamily(BaseFont);
@@ -146,16 +176,20 @@ public sealed class PdfFont
         }
 
         double missingWidth = 0;
+        bool symbolic = false;
         if (fontDict.Get("FontDescriptor") is Dict descriptor)
         {
             missingWidth = ToDouble(descriptor.Get("MissingWidth"), 0);
+            // /Flags bit 3 (value 4) marks a symbolic font.
+            symbolic = descriptor.Get("Flags") is double flags && ((int)flags & 0x4) != 0;
         }
 
-        // When no /Widths are supplied (common for the Standard 14 fonts), fall
-        // back to the built-in Core-14 advance metrics.
-        Func<int, double>? standardWidth = widths.Count == 0 ? StandardFonts.Resolve(baseFont) : null;
+        // Resolve Core-14 metrics whenever the base font is a standard font, so
+        // they can fill in codes outside the explicit /Widths range too (not only
+        // when /Widths is entirely absent).
+        Func<int, double>? standardWidth = StandardFonts.Resolve(baseFont);
 
-        string[]? encoding = BuildSimpleEncoding(fontDict, baseFont);
+        string[]? encoding = BuildSimpleEncoding(fontDict, baseFont, symbolic);
 
         return new PdfFont(
             isType0: false,
@@ -173,14 +207,19 @@ public sealed class PdfFont
     /// Builds the code-to-glyph-name table for a simple font from its
     /// <c>/Encoding</c> (a base-encoding name and/or a <c>/Differences</c> array).
     /// </summary>
-    private static string[]? BuildSimpleEncoding(Dict fontDict, string baseFont)
+    private static string[]? BuildSimpleEncoding(Dict fontDict, string baseFont, bool symbolic = false)
     {
         object? enc = fontDict.Get("Encoding");
 
-        // The default base encoding: the symbolic fonts (Symbol / ZapfDingbats)
-        // carry their own built-in encoding; WinAnsi otherwise (a pragmatic
-        // choice that maximizes correct text).
-        string[] baseTable = DefaultBaseEncoding(baseFont);
+        // The default base encoding: the named symbolic fonts (Symbol /
+        // ZapfDingbats) carry their own built-in encoding; a font flagged
+        // Symbolic in its descriptor uses the program's built-in encoding (which
+        // we don't decode here), so start from an empty table rather than
+        // imposing WinAnsi glyph names on codes that aren't WinAnsi. WinAnsi is
+        // the pragmatic default for ordinary non-symbolic text.
+        string[] baseTable = symbolic && !IsNamedSymbolFont(baseFont)
+            ? EmptyEncodingTable()
+            : DefaultBaseEncoding(baseFont);
         List<object?>? differences = null;
 
         switch (enc)
@@ -242,6 +281,23 @@ public sealed class PdfFont
         return Encodings.WinAnsi;
     }
 
+    /// <summary>True when the base-font name is one of the built-in symbol fonts
+    /// (Symbol / ZapfDingbats), which have their own well-known encoding table.</summary>
+    private static bool IsNamedSymbolFont(string baseFont)
+    {
+        int plus = baseFont.IndexOf('+');
+        string name = plus >= 0 ? baseFont[(plus + 1)..] : baseFont;
+        return name.Contains("Symbol", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Dingbats", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string[] EmptyEncodingTable()
+    {
+        var table = new string[256];
+        Array.Fill(table, string.Empty);
+        return table;
+    }
+
     private static PdfFont CreateType3(Dict fontDict, IXRef xref, ToUnicodeCMap? toUnicode)
     {
         int firstChar = ToInt(fontDict.Get("FirstChar"), 0);
@@ -256,7 +312,10 @@ public sealed class PdfFont
 
         // Type3 glyphs live in glyph space; /FontMatrix maps them to text space.
         Matrix fontMatrix = ReadFontMatrix(fontDict);
-        string[]? encoding = BuildSimpleEncoding(fontDict, "");
+        // A Type3 font defines its own glyphs via /CharProcs keyed by the names in
+        // /Encoding /Differences; there is no standard base encoding, so start from
+        // an empty table (symbolic) rather than imposing WinAnsi names.
+        string[]? encoding = BuildSimpleEncoding(fontDict, "", symbolic: true);
 
         var font = new PdfFont(
             isType0: false,
@@ -301,11 +360,11 @@ public sealed class PdfFont
             defaultWidth = ToDouble(cidFont.Get("DW"), 1000);
             if (cidFont.Get("W") is List<object?> w)
             {
-                ReadCidWidths(w, cidWidths);
+                ReadCidWidths(w, cidWidths, xref);
             }
         }
 
-        return new PdfFont(
+        var font = new PdfFont(
             isType0: true,
             baseFont,
             firstChar: 0,
@@ -313,24 +372,42 @@ public sealed class PdfFont
             cidWidths,
             defaultWidth,
             toUnicode);
+
+        // The Type0 /Encoding maps character codes to CIDs: Identity-H/V map
+        // directly, an embedded CMap stream supplies explicit ranges.
+        object? enc = fontDict.Get("Encoding");
+        if (enc is PdfStream cmapStream)
+        {
+            try
+            {
+                font._cidEncoding = CMap.Parse(StreamDecoder.Decode(cmapStream));
+            }
+            catch
+            {
+                font._cidEncoding = CMap.Identity;
+            }
+        }
+        return font;
     }
 
-    private static void ReadCidWidths(List<object?> w, Dictionary<int, double> cidWidths)
+    private static void ReadCidWidths(List<object?> w, Dictionary<int, double> cidWidths, IXRef xref)
     {
-        // Two forms: "c [w1 w2 ...]" and "cFirst cLast w".
+        // Two forms: "c [w1 w2 ...]" and "cFirst cLast w". Array elements (and the
+        // inner width list) may be indirect references, so resolve each.
         int i = 0;
         while (i < w.Count)
         {
-            if (w[i] is not double first)
+            if (xref.FetchIfRef(w[i]) is not double first)
             {
                 break;
             }
-            if (i + 1 < w.Count && w[i + 1] is List<object?> list)
+            object? second = i + 1 < w.Count ? xref.FetchIfRef(w[i + 1]) : null;
+            if (second is List<object?> list)
             {
                 int cid = (int)first;
                 foreach (var item in list)
                 {
-                    if (item is double width)
+                    if (xref.FetchIfRef(item) is double width)
                     {
                         cidWidths[cid] = width;
                     }
@@ -338,7 +415,7 @@ public sealed class PdfFont
                 }
                 i += 2;
             }
-            else if (i + 2 < w.Count && w[i + 1] is double last && w[i + 2] is double width)
+            else if (second is double last && i + 2 < w.Count && xref.FetchIfRef(w[i + 2]) is double width)
             {
                 for (int cid = (int)first; cid <= (int)last; cid++)
                 {
@@ -374,17 +451,18 @@ public sealed class PdfFont
     {
         if (_isType0)
         {
-            for (int i = 0; i + 1 < bytes.Length; i += 2)
+            int step = _cidEncoding.CodeLength >= 1 ? _cidEncoding.CodeLength : 2;
+            for (int i = 0; i + step <= bytes.Length; i += step)
             {
-                int code = (bytes[i] << 8) | bytes[i + 1];
-                double width = _cidWidths.TryGetValue(code, out var w) ? w : _defaultWidth;
-                yield return new Glyph(code, UnicodeFor(code), width, isSpace: false);
-            }
-            // Handle a trailing odd byte defensively.
-            if (bytes.Length % 2 == 1)
-            {
-                int code = bytes[^1];
-                yield return new Glyph(code, UnicodeFor(code), _defaultWidth, false);
+                long code = 0;
+                for (int k = 0; k < step; k++)
+                {
+                    code = (code << 8) | bytes[i + k];
+                }
+                int cid = _cidEncoding.Lookup(code);
+                double width = _cidWidths.TryGetValue(cid, out var w) ? w : _defaultWidth;
+                // Text is keyed by the original code for ToUnicode lookup.
+                yield return new Glyph((int)code, UnicodeFor((int)code), width, isSpace: false);
             }
         }
         else
@@ -401,11 +479,15 @@ public sealed class PdfFont
     private double WidthFor(int code)
     {
         int index = code - _firstChar;
-        if (index >= 0 && index < _widths.Length && _widths[index] != 0)
+        if (index >= 0 && index < _widths.Length)
         {
+            // An explicit width of 0 is valid (e.g. combining marks) — use it
+            // rather than falling through to a substitute metric.
             return _widths[index] * _glyphWidthScale;
         }
-        if (_widths.Length == 0 && _standardWidth is not null)
+        // Code outside [FirstChar, FirstChar+len): prefer Core-14 metrics, then
+        // the /MissingWidth default (never silently 0 when metrics exist).
+        if (_standardWidth is not null)
         {
             return _standardWidth(code);
         }

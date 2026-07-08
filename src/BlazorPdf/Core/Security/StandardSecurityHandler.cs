@@ -41,7 +41,7 @@ public sealed class StandardSecurityHandler
     }
 
     /// <summary>Builds a handler from the <c>/Encrypt</c> dictionary, or <c>null</c> if unsupported.</summary>
-    public static StandardSecurityHandler? TryCreate(Dict encrypt, byte[]? id0)
+    public static StandardSecurityHandler? TryCreate(Dict encrypt, byte[]? id0, string? password = null)
     {
         if ((encrypt.Get("Filter") as Name)?.Value is not "Standard")
         {
@@ -55,30 +55,188 @@ public sealed class StandardSecurityHandler
         byte[] u = GetStringBytes(encrypt.Get("U"));
         int length = GetInt(encrypt.Get("Length"), 40);
         bool encryptMetadata = encrypt.Get("EncryptMetadata") is not bool em || em;
+        byte[] pwd = PasswordBytes(password);
 
         (CipherKind stream, CipherKind str) = ResolveCiphers(encrypt, v);
 
         byte[] fileKey;
-        if (r is >= 2 and <= 4)
+        try
         {
-            fileKey = ComputeKeyLegacy(o, p, id0 ?? [], r, length, encryptMetadata);
-        }
-        else if (r is 5 or 6)
-        {
-            byte[] ue = GetStringBytes(encrypt.Get("UE"));
-            fileKey = ComputeKeyR6(u, ue);
-            if (fileKey.Length == 0)
+            if (r is >= 2 and <= 4)
+            {
+                fileKey = ComputeAndValidateLegacy(pwd, o, u, p, id0 ?? [], r, length, encryptMetadata, password is not null);
+            }
+            else if (r is 5 or 6)
+            {
+                byte[] ue = GetStringBytes(encrypt.Get("UE"));
+                byte[] oe = GetStringBytes(encrypt.Get("OE"));
+                fileKey = ComputeAndValidateR56(pwd, u, o, ue, oe, r, password is not null);
+            }
+            else
             {
                 return null;
             }
         }
-        else
+        catch (PlatformNotSupportedException ex)
         {
-            return null;
+            // MD5/AES from System.Security.Cryptography are absent in the browser
+            // WebAssembly sandbox. Convert to a clear, typed failure.
+            throw new PdfUnsupportedEncryptionException(
+                "Encrypted PDFs are not supported on WebAssembly (MD5/AES are unavailable in the browser sandbox).", ex);
         }
 
         return new StandardSecurityHandler(fileKey, r, stream, str);
     }
+
+    // ----- Legacy (R2-4) key derivation with password validation -----
+
+    private static byte[] ComputeAndValidateLegacy(byte[] pwd, byte[] o, byte[] u, int p,
+        byte[] id0, int r, int length, bool encryptMetadata, bool passwordProvided)
+    {
+        // Try the supplied (or empty) password as the user password first.
+        byte[] key = ComputeKeyLegacy(pwd, o, p, id0, r, length, encryptMetadata);
+        if (ValidateUserLegacy(key, u, id0, r))
+        {
+            return key;
+        }
+
+        // Fall back to treating it as the owner password (Algorithm 7): recover the
+        // padded user password, then derive and validate the user key from it.
+        byte[]? userPwd = UserPasswordFromOwner(pwd, o, r, length);
+        if (userPwd is not null)
+        {
+            byte[] ownerKey = ComputeKeyLegacy(userPwd, o, p, id0, r, length, encryptMetadata);
+            if (ValidateUserLegacy(ownerKey, u, id0, r))
+            {
+                return ownerKey;
+            }
+        }
+
+        throw new PdfPasswordException(
+            passwordProvided ? "The supplied password is incorrect." : "This document is password-protected.",
+            passwordProvided);
+    }
+
+    private static bool ValidateUserLegacy(byte[] key, byte[] u, byte[] id0, int r)
+    {
+        // Algorithm 6: derive /U from the key and compare.
+        if (u.Length == 0)
+        {
+            return true; // nothing to check against; accept
+        }
+        if (r == 2)
+        {
+            byte[] computed = Rc4.Transform(key, Padding);
+            return FirstBytesEqual(computed, u, 32);
+        }
+        byte[] hash = Md5(Concat(Padding, id0));
+        byte[] enc = Rc4.Transform(key, hash);
+        for (int i = 1; i <= 19; i++)
+        {
+            enc = Rc4.Transform(XorKey(key, i), enc);
+        }
+        return FirstBytesEqual(enc, u, 16);
+    }
+
+    private static byte[]? UserPasswordFromOwner(byte[] ownerPwd, byte[] o, int r, int length)
+    {
+        if (o.Length < 32)
+        {
+            return null;
+        }
+        byte[] hash = Md5(Pad(ownerPwd));
+        int n = r == 2 ? 5 : Math.Clamp(length / 8, 5, 16);
+        if (r >= 3)
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                hash = Md5(hash[..n]);
+            }
+        }
+        byte[] rc4Key = hash[..n];
+        byte[] userPwd = o[..32];
+        if (r == 2)
+        {
+            return Rc4.Transform(rc4Key, userPwd);
+        }
+        for (int i = 19; i >= 0; i--)
+        {
+            userPwd = Rc4.Transform(XorKey(rc4Key, i), userPwd);
+        }
+        return userPwd;
+    }
+
+    private static byte[] XorKey(byte[] key, int i)
+    {
+        var x = new byte[key.Length];
+        for (int j = 0; j < key.Length; j++)
+        {
+            x[j] = (byte)(key[j] ^ i);
+        }
+        return x;
+    }
+
+    // ----- R5/R6 (AES-256) key derivation with password validation -----
+
+    private static byte[] ComputeAndValidateR56(byte[] pwd, byte[] u, byte[] o, byte[] ue, byte[] oe,
+        int r, bool passwordProvided)
+    {
+        if (u.Length < 48)
+        {
+            throw new PdfPasswordException("Malformed encryption dictionary.", passwordProvided);
+        }
+        byte[] uValidationSalt = u[32..40];
+        byte[] uKeySalt = u[40..48];
+
+        // User password?
+        byte[] userHash = HashR56(pwd, uValidationSalt, [], r);
+        if (FirstBytesEqual(userHash, u, 32) && ue.Length >= 32)
+        {
+            byte[] ik = HashR56(pwd, uKeySalt, [], r);
+            return AesCbcNoPadding(ik, new byte[16], ue);
+        }
+
+        // Owner password? (owner salts are hashed together with the full /U.)
+        if (o.Length >= 48 && oe.Length >= 32)
+        {
+            byte[] u48 = u[..48];
+            byte[] oValidationSalt = o[32..40];
+            byte[] oKeySalt = o[40..48];
+            byte[] ownerHash = HashR56(pwd, oValidationSalt, u48, r);
+            if (FirstBytesEqual(ownerHash, o, 32))
+            {
+                byte[] ik = HashR56(pwd, oKeySalt, u48, r);
+                return AesCbcNoPadding(ik, new byte[16], oe);
+            }
+        }
+
+        throw new PdfPasswordException(
+            passwordProvided ? "The supplied password is incorrect." : "This document is password-protected.",
+            passwordProvided);
+    }
+
+    private static byte[] HashR56(byte[] pwd, byte[] salt, byte[] userData, int r)
+        // R5 uses a single SHA-256; R6 uses the hardened Algorithm 2.B loop.
+        => r == 5 ? SHA256.HashData(Concat(pwd, salt, userData)) : Hash2B(pwd, salt, userData);
+
+    private static bool FirstBytesEqual(byte[] a, byte[] b, int n)
+    {
+        if (a.Length < n || b.Length < n)
+        {
+            return false;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            if (a[i] != b[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static byte[] PasswordBytes(string? password)
+        => string.IsNullOrEmpty(password) ? [] : System.Text.Encoding.UTF8.GetBytes(password);
 
     /// <summary>Decrypts the raw bytes of a stream belonging to object <paramref name="num"/> <paramref name="gen"/>.</summary>
     public byte[] DecryptStream(byte[] data, int num, int gen) => Decrypt(data, num, gen, _streamCipher);
@@ -122,47 +280,31 @@ public sealed class StandardSecurityHandler
             input[n + 8] = 0x54; // 'T'
         }
 
-        byte[] hash = MD5.HashData(input);
+        byte[] hash = Md5(input);
         int keyLen = Math.Min(n + 5, 16);
         return hash[..keyLen];
     }
 
-    private static byte[] ComputeKeyLegacy(byte[] o, int p, byte[] id0, int r, int length, bool encryptMetadata)
+    private static byte[] ComputeKeyLegacy(byte[] pwd, byte[] o, int p, byte[] id0, int r, int length, bool encryptMetadata)
     {
-        // Algorithm 2 with an empty user password.
-        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-        md5.AppendData(Padding); // padded empty password
-        md5.AppendData(o.Length >= 32 ? o[..32] : Pad(o));
-        md5.AppendData([(byte)p, (byte)(p >> 8), (byte)(p >> 16), (byte)(p >> 24)]);
-        md5.AppendData(id0);
-        if (r >= 4 && !encryptMetadata)
-        {
-            md5.AppendData([0xFF, 0xFF, 0xFF, 0xFF]);
-        }
-        byte[] hash = md5.GetHashAndReset();
+        // Algorithm 2 with the given (possibly empty) user password.
+        byte[] pbytes = [(byte)p, (byte)(p >> 8), (byte)(p >> 16), (byte)(p >> 24)];
+        byte[] input = r >= 4 && !encryptMetadata
+            ? Concat(Pad(pwd), o.Length >= 32 ? o[..32] : Pad(o), pbytes, id0, [0xFF, 0xFF, 0xFF, 0xFF])
+            : Concat(Pad(pwd), o.Length >= 32 ? o[..32] : Pad(o), pbytes, id0);
+        byte[] hash = Md5(input);
 
-        int n = r == 2 ? 5 : Math.Max(5, length / 8);
+        // A malformed /Length (e.g. 256 → n=32) would slice past the 16-byte MD5
+        // digest and crash. Clamp to the valid RC4/AES-128 key range.
+        int n = r == 2 ? 5 : Math.Clamp(length / 8, 5, 16);
         if (r >= 3)
         {
             for (int i = 0; i < 50; i++)
             {
-                hash = MD5.HashData(hash[..n]);
+                hash = Md5(hash[..n]);
             }
         }
         return hash[..n];
-    }
-
-    private static byte[] ComputeKeyR6(byte[] u, byte[] ue)
-    {
-        // Algorithm 2.A / 2.B with an empty user password.
-        if (u.Length < 48 || ue.Length < 32)
-        {
-            return [];
-        }
-        byte[] keySalt = u[40..48];
-        byte[] intermediate = Hash2B([], keySalt, []);
-        // Decrypt UE with AES-256-CBC, no padding, zero IV.
-        return AesCbcNoPadding(intermediate, new byte[16], ue);
     }
 
     private static byte[] Hash2B(byte[] password, byte[] salt, byte[] userData)
@@ -257,27 +399,15 @@ public sealed class StandardSecurityHandler
         return StripPkcs7(plain);
     }
 
+    // Managed AES/MD5 so encrypted PDFs open in the browser WebAssembly sandbox,
+    // where System.Security.Cryptography's Aes/MD5 throw PlatformNotSupported.
     private static byte[] AesCbcNoPadding(byte[] key, byte[] iv, byte[] data)
-    {
-        using var aes = Aes.Create();
-        aes.Mode = CipherMode.CBC;
-        aes.Padding = PaddingMode.None;
-        aes.Key = key;
-        aes.IV = iv;
-        using var decryptor = aes.CreateDecryptor();
-        return decryptor.TransformFinalBlock(data, 0, data.Length);
-    }
+        => ManagedAes.CbcDecrypt(key, iv, data);
 
     private static byte[] AesCbcEncryptNoPadding(byte[] key, byte[] iv, byte[] data)
-    {
-        using var aes = Aes.Create();
-        aes.Mode = CipherMode.CBC;
-        aes.Padding = PaddingMode.None;
-        aes.Key = key;
-        aes.IV = iv;
-        using var encryptor = aes.CreateEncryptor();
-        return encryptor.TransformFinalBlock(data, 0, data.Length);
-    }
+        => ManagedAes.CbcEncrypt(key, iv, data);
+
+    private static byte[] Md5(byte[] data) => ManagedMd5.Hash(data);
 
     private static byte[] StripPkcs7(byte[] data)
     {

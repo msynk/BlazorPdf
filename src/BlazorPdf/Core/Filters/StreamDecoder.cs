@@ -20,13 +20,13 @@ public static class StreamDecoder
         stream.Reset();
         byte[] data = stream.GetBytes();
 
-        var filters = ResolveNames(dict.Get("Filter", "F"));
+        var filters = ResolveNames(dict.Get("Filter", "F"), dict.XRef);
         if (filters.Count == 0)
         {
             return data;
         }
 
-        var parmsList = ResolveParms(dict.Get("DecodeParms", "DP"), filters.Count);
+        var parmsList = ResolveParms(dict.Get("DecodeParms", "DP"), filters.Count, dict.XRef);
         for (int i = 0; i < filters.Count; i++)
         {
             data = ApplyFilter(filters[i], data, parmsList[i]);
@@ -87,33 +87,47 @@ public static class StreamDecoder
 
     private static byte[] Inflate(byte[] data)
     {
-        // PDF FlateDecode is zlib-wrapped deflate (RFC 1950). Try ZLib first,
-        // then fall back to raw deflate for malformed producers.
+        // PDF FlateDecode is zlib-wrapped deflate (RFC 1950). Read incrementally
+        // and keep whatever inflated before any error: a truncated stream, or a
+        // bad trailing Adler-32 checksum, must not throw away the whole page.
+        byte[] zlib = InflateIncremental(data, raw: false, skipHeader: 0);
+        if (zlib.Length > 0)
+        {
+            return zlib;
+        }
+        // Non-zlib producers: raw deflate, then raw deflate past a 2-byte header.
+        byte[] rawStream = InflateIncremental(data, raw: true, skipHeader: 0);
+        if (rawStream.Length > 0)
+        {
+            return rawStream;
+        }
+        return InflateIncremental(data, raw: true, skipHeader: 2);
+    }
+
+    private static byte[] InflateIncremental(byte[] data, bool raw, int skipHeader)
+    {
+        using var output = new MemoryStream();
         try
         {
-            return InflateWith(data, raw: false);
-        }
-        catch
-        {
-            try
-            {
-                return InflateWith(data, raw: true);
-            }
-            catch
+            if (skipHeader > 0 && data.Length <= skipHeader)
             {
                 return [];
             }
+            using var input = new MemoryStream(data, skipHeader, data.Length - skipHeader);
+            using Stream decompressor = raw
+                ? new DeflateStream(input, CompressionMode.Decompress)
+                : new ZLibStream(input, CompressionMode.Decompress);
+            var buffer = new byte[8192];
+            int read;
+            while ((read = decompressor.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+            }
         }
-    }
-
-    private static byte[] InflateWith(byte[] data, bool raw)
-    {
-        using var input = new MemoryStream(data);
-        using Stream decompressor = raw
-            ? new DeflateStream(input, CompressionMode.Decompress)
-            : new ZLibStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        decompressor.CopyTo(output);
+        catch
+        {
+            // Return the bytes decoded before the failure (may be empty).
+        }
         return output.ToArray();
     }
 
@@ -255,20 +269,30 @@ public static class StreamDecoder
         return output.ToArray();
     }
 
-    private static List<string> ResolveNames(object? filter)
+    // Filters and DecodeParms entries may themselves be indirect references
+    // (both the whole value and individual array elements), so resolve through
+    // the owning dictionary's xref before interpreting them.
+    private static readonly HashSet<string> KnownFilters = new(StringComparer.Ordinal)
+    {
+        "FlateDecode", "Fl", "LZWDecode", "LZW", "ASCIIHexDecode", "AHx",
+        "ASCII85Decode", "A85", "RunLengthDecode", "RL", "DCTDecode", "DCT",
+        "JPXDecode", "CCITTFaxDecode", "CCF", "JBIG2Decode",
+    };
+
+    private static List<string> ResolveNames(object? filter, IXRef? xref)
     {
         var result = new List<string>();
         switch (filter)
         {
             case Name n:
-                result.Add(n.Value);
+                AddFilterName(result, n.Value);
                 break;
             case List<object?> arr:
                 foreach (var item in arr)
                 {
-                    if (item is Name name)
+                    if ((xref?.FetchIfRef(item) ?? item) is Name name)
                     {
-                        result.Add(name.Value);
+                        AddFilterName(result, name.Value);
                     }
                 }
                 break;
@@ -276,14 +300,25 @@ public static class StreamDecoder
         return result;
     }
 
-    private static List<Dict?> ResolveParms(object? parms, int count)
+    private static void AddFilterName(List<string> result, string name)
+    {
+        if (!KnownFilters.Contains(name))
+        {
+            // Unknown filter: surface a diagnostic rather than silently passing
+            // the data through unchanged (which would render as garbage).
+            System.Diagnostics.Debug.WriteLine($"BlazorPdf: unknown stream filter '{name}'.");
+        }
+        result.Add(name);
+    }
+
+    private static List<Dict?> ResolveParms(object? parms, int count, IXRef? xref)
     {
         var result = new List<Dict?>(count);
         if (parms is List<object?> arr)
         {
             for (int i = 0; i < count; i++)
             {
-                result.Add(i < arr.Count ? arr[i] as Dict : null);
+                result.Add(i < arr.Count ? xref?.FetchIfRef(arr[i]) as Dict ?? arr[i] as Dict : null);
             }
         }
         else

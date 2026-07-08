@@ -59,8 +59,10 @@ public sealed class ContentParser
             operands.Add(token);
             if (operands.Count > 64)
             {
-                // Guard against runaway operand accumulation in malformed content.
-                operands.Clear();
+                // Guard against runaway operand accumulation in malformed content,
+                // but keep the most recent operands: the next valid operator still
+                // needs its (few) trailing operands, so drop the oldest, not all.
+                operands.RemoveAt(0);
             }
         }
 
@@ -141,32 +143,49 @@ public sealed class ContentParser
             {
                 dict.Set(key.Value, ReadArray());
             }
+            else if (value is Cmd { Value: "<<" })
+            {
+                // Nested dictionary value, e.g. /DecodeParms << /K -1 … >>.
+                dict.Set(key.Value, ReadDict());
+            }
             else
             {
                 dict.Set(key.Value, value);
             }
         }
 
-        byte[] data = ReadInlineImageData();
+        byte[] data = ReadInlineImageData(dict);
         return new Operation("INLINE_IMAGE", new List<object?> { dict, data });
     }
 
-    private byte[] ReadInlineImageData()
+    private byte[] ReadInlineImageData(Dict dict)
     {
         // After "ID" exactly one whitespace byte separates the keyword from data.
         BaseStream stream = _lexer.Stream;
         var buffer = ((PdfStream)stream).Buffer;
         int pos = _lexer.Pos - 1; // current char position
 
-        // Skip the single whitespace after ID.
-        if (pos < buffer.Length && (buffer[pos] is 0x20 or 0x0A or 0x0D))
+        // Skip the whitespace after ID. A single space or LF is standard, but
+        // tolerate a full CRLF pair so the image data starts at the right byte.
+        if (pos < buffer.Length && buffer[pos] == 0x0D)
+        {
+            pos++;
+        }
+        if (pos < buffer.Length && (buffer[pos] is 0x20 or 0x0A))
         {
             pos++;
         }
 
         int start = pos;
+
+        // For an unfiltered image the exact data length is W*H*components*BPC,
+        // so we can skip straight past it and avoid a false "EI" match inside
+        // binary sample data.
+        int rawLen = UnfilteredLength(dict);
+        int scanFrom = rawLen >= 0 && start + rawLen <= buffer.Length ? start + rawLen : start;
+
         // Scan for the "EI" delimiter surrounded by whitespace.
-        for (int i = pos; i + 1 < buffer.Length; i++)
+        for (int i = scanFrom; i + 1 < buffer.Length; i++)
         {
             if (buffer[i] == (byte)'E' && buffer[i + 1] == (byte)'I'
                 && (i == 0 || IsWhitespaceByte(buffer[i - 1]))
@@ -174,7 +193,8 @@ public sealed class ContentParser
             {
                 int end = i;
                 _lexer.Seek(i + 2);
-                return buffer[start..end];
+                int len = rawLen >= 0 ? rawLen : end - start;
+                return buffer[start..(start + len)];
             }
         }
 
@@ -183,4 +203,51 @@ public sealed class ContentParser
     }
 
     private static bool IsWhitespaceByte(byte b) => b is 0x00 or 0x09 or 0x0A or 0x0C or 0x0D or 0x20;
+
+    /// <summary>
+    /// The exact byte length of an <em>unfiltered</em> inline image
+    /// (W×H rows of components×BPC bits, byte-aligned per row), or -1 when the
+    /// image is filtered (compressed length is not predictable) or the geometry
+    /// is unknown.
+    /// </summary>
+    private static int UnfilteredLength(Dict dict)
+    {
+        if (dict.Get("Filter", "F") is not null)
+        {
+            return -1;
+        }
+        int w = AsInt(dict.Get("Width", "W"));
+        int h = AsInt(dict.Get("Height", "H"));
+        if (w <= 0 || h <= 0)
+        {
+            return -1;
+        }
+
+        bool imageMask = dict.Get("ImageMask", "IM") is bool im && im;
+        int bpc = imageMask ? 1 : AsInt(dict.Get("BitsPerComponent", "BPC"));
+        if (bpc <= 0)
+        {
+            return -1;
+        }
+        int comps = imageMask ? 1 : ComponentCount(dict.Get("ColorSpace", "CS"));
+        if (comps <= 0)
+        {
+            return -1;
+        }
+
+        long rowBytes = ((long)w * comps * bpc + 7) / 8;
+        long total = rowBytes * h;
+        return total is > 0 and <= int.MaxValue ? (int)total : -1;
+    }
+
+    private static int ComponentCount(object? cs) => (cs as Name)?.Value switch
+    {
+        "DeviceGray" or "G" or "CalGray" => 1,
+        "DeviceRGB" or "RGB" or "CalRGB" => 3,
+        "DeviceCMYK" or "CMYK" => 4,
+        "Indexed" or "I" => 1,
+        _ => -1, // named resource / array space: not resolvable here
+    };
+
+    private static int AsInt(object? v) => v is double d ? (int)d : 0;
 }
