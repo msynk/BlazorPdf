@@ -54,6 +54,9 @@ internal sealed class OutlineBuilder
         var items = new List<OutlineItem>();
         if (depth > 32)
         {
+            // Very deep outline: stop descending but record why, rather than
+            // silently dropping the deeper bookmarks.
+            (_xref as XRef)?.Warnings.Add("Outline nesting deeper than 32 levels; deeper bookmarks omitted.");
             return items;
         }
 
@@ -110,7 +113,7 @@ internal sealed class OutlineBuilder
         return ResolveDestination(dest);
     }
 
-    private PdfDestination? ResolveDestination(object? dest)
+    internal PdfDestination? ResolveDestination(object? dest)
     {
         dest = _xref.FetchIfRef(dest);
 

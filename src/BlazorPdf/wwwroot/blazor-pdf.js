@@ -106,6 +106,31 @@ export function registerScrollSpy(container, dotnetRef) {
     container.__bpfScroll = onScroll;
     scheduleRender(container, dotnetRef); // initial fill
 
+    // Delegate clicks on internal-link hotspots ([data-bp-page]) to page nav.
+    const onClick = (e) => {
+        const hot = e.target.closest && e.target.closest("[data-bp-page]");
+        if (hot) {
+            const n = parseInt(hot.getAttribute("data-bp-page"), 10);
+            if (!Number.isNaN(n)) {
+                e.preventDefault();
+                scrollToPage(container, n);
+                dotnetRef.invokeMethodAsync("OnPageVisible", n);
+            }
+        }
+    };
+    container.addEventListener("click", onClick);
+    container.__bpfClick = onClick;
+
+    // Ctrl+wheel (and pinch, which browsers report as ctrl+wheel) zooms.
+    const onWheel = (e) => {
+        if (e.ctrlKey) {
+            e.preventDefault();
+            dotnetRef.invokeMethodAsync("OnWheelZoom", e.deltaY);
+        }
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    container.__bpfWheel = onWheel;
+
     // Notify .NET when the container resizes (used for fit-to-width/page).
     if (typeof ResizeObserver !== "undefined") {
         const resize = new ResizeObserver(() => {
@@ -130,6 +155,14 @@ export function disposeScrollSpy(container) {
         container.removeEventListener("scroll", container.__bpfScroll);
         container.__bpfScroll = null;
     }
+    if (container.__bpfClick) {
+        container.removeEventListener("click", container.__bpfClick);
+        container.__bpfClick = null;
+    }
+    if (container.__bpfWheel) {
+        container.removeEventListener("wheel", container.__bpfWheel);
+        container.__bpfWheel = null;
+    }
     container.__bpfDotnet = null;
     if (container.__bpfResize) {
         container.__bpfResize.disconnect();
@@ -144,6 +177,21 @@ export function download(fileName, base64) {
     document.body.appendChild(link);
     link.click();
     link.remove();
+}
+
+// Streams the document bytes from .NET (via a DotNetStreamReference) into a Blob
+// and triggers a download, avoiding a multi-megabyte base64 string over SignalR.
+export async function downloadStream(fileName, streamRef) {
+    const buffer = await streamRef.arrayBuffer();
+    const blob = new Blob([buffer], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName || "document.pdf";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 export function toggleFullscreen(element) {

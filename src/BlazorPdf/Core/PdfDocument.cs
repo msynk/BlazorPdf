@@ -70,6 +70,35 @@ public sealed class PdfDocument
     public IReadOnlyList<string> PageLabels =>
         _pageLabels ??= PageLabelBuilder.Build(_xref, Catalog, PageCount);
 
+    private IReadOnlyList<StructElement>? _structure;
+
+    /// <summary>
+    /// The tagged-PDF logical structure tree (<c>/StructTreeRoot</c>) for
+    /// assistive technology and reflow, or empty when the document is untagged.
+    /// </summary>
+    public IReadOnlyList<StructElement> StructureTree =>
+        _structure ??= PdfStructTree.Build(_xref, Catalog);
+
+    private IReadOnlyList<FormField>? _formFields;
+
+    /// <summary>
+    /// The interactive form fields (<c>/AcroForm</c>) as a flat list of
+    /// name/type/value, or empty when the document has no form.
+    /// </summary>
+    public IReadOnlyList<FormField> FormFields =>
+        _formFields ??= PdfAcroForm.Build(_xref, Catalog);
+
+    /// <summary>
+    /// Resolves a destination (a named destination string/name, or an explicit
+    /// <c>[page …]</c> array, or a GoTo action's <c>/D</c>) to a 1-based page
+    /// number, or <c>null</c> when it cannot be resolved. Used for internal links.
+    /// </summary>
+    public int? ResolveDestinationPage(object? dest)
+    {
+        _ = Pages; // ensure the page-index map is populated
+        return new OutlineBuilder(_xref, Catalog, _pageIndexByDict).ResolveDestination(dest)?.PageNumber;
+    }
+
     /// <summary>Parses <paramref name="bytes"/> into a document model.</summary>
     public static PdfDocument Load(byte[] bytes) => Load(bytes, null);
 

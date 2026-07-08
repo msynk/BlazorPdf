@@ -47,8 +47,40 @@ internal static class CssShadingBuilder
         {
             2 when coords.Length >= 4 => BuildAxial(coords, domain, cs, fn, ctm, viewW, viewH, extendBefore, extendAfter),
             3 when coords.Length >= 6 => BuildRadial(coords, domain, cs, fn, ctm, extendBefore, extendAfter),
-            _ => null,
+            // Function-based (type 1) and mesh (types 4-7) shadings are not
+            // rasterized; paint an averaged solid colour so the region is at least
+            // tinted rather than left blank.
+            _ => BuildFallback(shading, domain, cs, fn),
         };
+    }
+
+    private static string? BuildFallback(Dict shading, double[] domain, ColorSpace cs, PdfFunction? fn)
+    {
+        if (fn is not null)
+        {
+            long r = 0, g = 0, b = 0;
+            const int samples = 9;
+            for (int i = 0; i < samples; i++)
+            {
+                var (sr, sg, sb) = SampleRgb(domain, (double)i / (samples - 1), cs, fn);
+                r += sr;
+                g += sg;
+                b += sb;
+            }
+            return $"rgb({r / samples},{g / samples},{b / samples})";
+        }
+        // No function (mesh shading): honour /Background if present.
+        if (shading.Get("Background") is List<object?> bg && bg.Count > 0)
+        {
+            var comps = new double[bg.Count];
+            for (int i = 0; i < bg.Count; i++)
+            {
+                comps[i] = bg[i] is double d ? d : 0;
+            }
+            var (r, g, b) = cs.GetRgb(comps);
+            return $"rgb({r},{g},{b})";
+        }
+        return null;
     }
 
     private static string BuildAxial(double[] c, double[] domain, ColorSpace cs, PdfFunction? fn,

@@ -143,10 +143,13 @@ public sealed class PdfFont
         }
         try
         {
-            // TrueType / CIDFontType2 program.
+            // TrueType / CIDFontType2 program. Normalize the sfnt structure so a
+            // subset font with an unsorted directory or bad checksums still loads
+            // in the browser; keep the raw bytes if it isn't a parseable sfnt.
             if (descriptor.Get("FontFile2") is PdfStream ttf)
             {
-                return (StreamDecoder.Decode(ttf), "truetype");
+                byte[] raw = StreamDecoder.Decode(ttf);
+                return (TrueTypeSanitizer.Sanitize(raw) ?? raw, "truetype");
             }
             // OpenType program (FontFile3 with Subtype OpenType).
             if (descriptor.Get("FontFile3") is PdfStream ot && ot.Dict is not null

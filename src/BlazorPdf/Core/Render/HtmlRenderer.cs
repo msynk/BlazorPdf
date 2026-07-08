@@ -27,6 +27,13 @@ public sealed class HtmlRenderer
     private readonly IXRef _xref;
     private readonly Dictionary<object, PdfFont> _fontCache;
 
+    /// <summary>
+    /// Optional resolver mapping a GoTo/named destination to a 1-based page
+    /// number, used to render internal (intra-document) link annotations. When
+    /// null, only external URI links are emitted.
+    /// </summary>
+    public Func<object?, int?>? DestinationResolver { get; set; }
+
     private GraphicsState _state = new();
     private readonly Stack<GraphicsState> _stack = new();
     private readonly Stack<int> _groupDepthStack = new();
@@ -776,6 +783,30 @@ public sealed class HtmlRenderer
             _resources = formResources;
         }
 
+        // Transparency group: composite the group's content as a unit, then apply
+        // the group-level alpha/blend once (isolation:isolate approximates a
+        // non-knockout group). Reset the inner alpha so member objects don't get
+        // the group's alpha applied twice.
+        bool groupWrap = false;
+        if (stream.Dict.Get("Group") is Dict grp && Primitives.IsName(grp.Get("S"), "Transparency")
+            && (_state.FillAlpha < 1 || _state.BlendMode.Length > 0))
+        {
+            _html.Append("<div style=\"position:absolute;inset:0;isolation:isolate");
+            if (_state.FillAlpha < 1)
+            {
+                _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
+            }
+            if (_state.BlendMode.Length > 0)
+            {
+                _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+            }
+            _html.Append("\">");
+            _state.FillAlpha = 1;
+            _state.StrokeAlpha = 1;
+            _state.BlendMode = "";
+            groupWrap = true;
+        }
+
         // Clip the form to its /BBox transformed into device space (spec §8.10.1):
         // form content must not paint outside its bounding box.
         bool bboxClip = false;
@@ -801,6 +832,10 @@ public sealed class HtmlRenderer
         }
 
         if (bboxClip)
+        {
+            _html.Append("</div>");
+        }
+        if (groupWrap)
         {
             _html.Append("</div>");
         }
@@ -932,23 +967,45 @@ public sealed class HtmlRenderer
         }
 
         string? uri = null;
-        if (annot.Get("A") is Dict action && Primitives.IsName(action.Get("S"), "URI")
-            && action.Get("URI") is PdfString u)
+        object? action = _xref.FetchIfRef(annot.Get("A"));
+        if (action is Dict actionDict && Primitives.IsName(actionDict.Get("S"), "URI")
+            && actionDict.Get("URI") is PdfString u)
         {
             uri = u.AsLatin1();
         }
-        if (uri is null || !IsAllowedUri(uri))
+
+        // Resolve an internal GoTo/named destination to a target page number.
+        int? destPage = null;
+        if (uri is null && DestinationResolver is not null)
         {
-            // Unknown, relative, or unsafe scheme (javascript:, data:, …): drop the
-            // anchor entirely so the hotspot stays inert and no script can run.
-            return;
+            object? dest = annot.Get("Dest");
+            if (dest is null && action is Dict a && Primitives.IsName(a.Get("S"), "GoTo"))
+            {
+                dest = a.Get("D");
+            }
+            if (dest is not null)
+            {
+                destPage = DestinationResolver(dest);
+            }
         }
 
         double[] r = ToRect(rectArr);
         Matrix transform = Matrix.Concat(_baseMatrix, new Matrix(1, 0, 0, 1, r[0], r[1]));
-        _html.Append($"<a href=\"{Escape(uri)}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"position:absolute;left:0;top:0;");
-        _html.Append(string.Create(CultureInfo.InvariantCulture,
-            $"width:{r[2] - r[0]:0.##}px;height:{r[3] - r[1]:0.##}px;transform:{transform.ToSvg()};transform-origin:0 0\"></a>"));
+        string style = string.Create(CultureInfo.InvariantCulture,
+            $"position:absolute;left:0;top:0;width:{r[2] - r[0]:0.##}px;height:{r[3] - r[1]:0.##}px;transform:{transform.ToSvg()};transform-origin:0 0");
+
+        if (uri is not null && IsAllowedUri(uri))
+        {
+            _html.Append($"<a href=\"{Escape(uri)}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"{style}\"></a>");
+        }
+        else if (destPage is int page)
+        {
+            // Internal link: the viewer delegates clicks on [data-bp-page] to
+            // page navigation. Emitted as a div (no href) so nothing navigates away.
+            _html.Append(string.Create(CultureInfo.InvariantCulture,
+                $"<div data-bp-page=\"{page}\" style=\"{style};cursor:pointer\"></div>"));
+        }
+        // Otherwise (unknown/unsafe scheme, unresolved dest): drop the hotspot.
     }
 
     private static Matrix ComputeAppearanceMatrix(double[] bbox, Matrix formMatrix, double[] rect)

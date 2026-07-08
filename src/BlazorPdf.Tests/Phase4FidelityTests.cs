@@ -51,4 +51,27 @@ public class Phase4FidelityTests
 
         Assert.Contains("ShownText", html);
     }
+
+    // 4.8 — a Link annotation with an internal GoTo destination emits a
+    // data-bp-page hotspot the viewer can navigate.
+    [Fact]
+    public void Internal_link_emits_page_hotspot()
+    {
+        var bodies = new List<string>
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [5 0 R] >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+            "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /Dest [4 0 R /Fit] >>",
+        };
+        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var renderer = new HtmlRenderer(doc.Pages[0], doc.XRef)
+        {
+            DestinationResolver = d => doc.ResolveDestinationPage(d),
+        };
+        string html = renderer.Render();
+
+        Assert.Contains("data-bp-page=\"2\"", html);
+    }
 }

@@ -29,6 +29,12 @@ The engine is being built incrementally, module by module.
 | Baseline JPEG decoder (CMYK/masked)     | `Core/Filters/JpegDecoder.cs`                     | Done   |
 | Optional content groups (layers)        | `HtmlRenderer` `BDC /OC … EMC`                    | Done   |
 | Damaged-file recovery                   | `XRef` object-scan rebuild + `PdfDocument.Warnings` | Done |
+| TrueType sfnt sanitizer                 | `Core/Fonts/TrueTypeSanitizer.cs`                 | Done   |
+| Type0 embedded CMap (code→CID)          | `Core/Fonts/CMap.cs`                              | Done   |
+| Text extraction / search index          | `Core/Content/TextExtractor.cs`, `PdfPage.ExtractText()` | Done |
+| Internal GoTo links                     | `HtmlRenderer` link overlay + viewer navigation   | Done   |
+| Tagged-PDF structure tree               | `PdfDocument.StructureTree`                       | Done   |
+| AcroForm field extraction               | `PdfDocument.FormFields`                          | Done   |
 | Blend modes (`BM`)                      | `HtmlRenderer` `mix-blend-mode`                   | Done   |
 | CCITTFaxDecode                          | `Core/Filters/CcittFaxDecoder.cs` (G3/G4)         | Done   |
 | Encryption (standard handler)           | `Core/Security/*` (RC4, AES-128/256, R2–R6, user/owner password, managed crypto for WASM) | Done |
@@ -63,7 +69,9 @@ These degrade gracefully — affected pages still load:
 - **Bare CFF/Type1 embedded programs**: text renders via substitute fonts with
   correct Unicode rather than the embedded glyph outlines (a browser cannot load a
   bare CFF/PFB without OpenType wrapping and a synthetic cmap). Embedded
-  TrueType/OpenType fonts are emitted directly.
+  TrueType/OpenType fonts are emitted directly, after sfnt-structure sanitization
+  (directory sort, checksum/padding repair) so subset fonts pass the browser's
+  strict font parser.
 - **JBIG2 and JPEG2000 images**: not decoded (large, specialized codecs); such
   images are skipped rather than rendered as noise.
 - **Progressive JPEG with CMYK**: the built-in decoder handles baseline sequential

@@ -1,3 +1,4 @@
+using System.Net.Http;
 using BlazorPdf.Core;
 using BlazorPdf.Core.Render;
 using Microsoft.AspNetCore.Components;
@@ -17,6 +18,8 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private PdfSource? _source;
     private PdfDocument? _document;
     private Core.Render.PdfFontStore? _fontStore;
+    private string?[]? _pageText; // lazily-built per-page text index for search
+    private int _loadVersion; // bumped per load; guards against a superseded load committing
     private string _status = "Idle.";
     private bool _loading;
 
@@ -85,6 +88,34 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     /// <summary>The currently focused page (1-based).</summary>
     public int CurrentPage => _currentPage;
 
+    /// <summary>The document-defined label for the current page (e.g. "iv", "A-1")
+    /// when it differs from the plain page number; otherwise <c>null</c>.</summary>
+    private string? CurrentPageLabel
+    {
+        get
+        {
+            if (_document is null)
+            {
+                return null;
+            }
+            try
+            {
+                var labels = _document.PageLabels;
+                int i = _currentPage - 1;
+                if (i < 0 || i >= labels.Count)
+                {
+                    return null;
+                }
+                string label = labels[i];
+                return label == _currentPage.ToString(System.Globalization.CultureInfo.InvariantCulture) ? null : label;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
     protected override void OnInitialized() => _zoomMode = InitialZoomMode;
 
     protected override async Task OnParametersSetAsync()
@@ -122,13 +153,25 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     [Inject] private IJSRuntime JS { get; set; } = default!;
 
+    [Inject] private IServiceProvider Services { get; set; } = default!;
+
+    // Parse off the UI thread on Blazor Server so a large document doesn't freeze
+    // the circuit; on single-threaded WASM this runs inline (Task.Run offers no
+    // parallelism there, and the surrounding Task.Yield already lets the bar paint).
+    private static Task<PdfDocument> ParseAsync(byte[] bytes, string? password)
+        => OperatingSystem.IsBrowser()
+            ? Task.FromResult(PdfDocument.Load(bytes, password))
+            : Task.Run(() => PdfDocument.Load(bytes, password));
+
     private async Task LoadAsync()
     {
+        int version = ++_loadVersion; // supersedes any load still in flight
         _pages.Clear();
         _pageWidths.Clear();
         _pageHeights.Clear();
         _document = null;
         _fontStore = null; // fresh embedded-font store per document
+        _pageText = null;  // invalidate the search text index
         _searchTotal = 0;
         _searchIndex = -1;
         _outline = Array.Empty<OutlineItem>();
@@ -136,12 +179,6 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         if (_source is null)
         {
             _status = "No document loaded.";
-            return;
-        }
-        if (!_source.IsBytes || _source.Bytes is null)
-        {
-            _status = "This build renders in-memory byte sources only.";
-            await OnError.InvokeAsync(_status);
             return;
         }
 
@@ -152,11 +189,52 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         StateHasChanged();
         await Task.Yield();
 
+        // A newer Source arrived while we yielded: abandon this stale load.
+        if (version != _loadVersion)
+        {
+            return;
+        }
+
+        // Resolve the bytes: an in-memory buffer, or a URL fetched via HttpClient.
+        byte[]? bytes = _source.Bytes;
+        if (bytes is null && _source.Url is not null)
+        {
+            var http = Services.GetService(typeof(HttpClient)) as HttpClient;
+            if (http is null)
+            {
+                _status = "URL sources require a registered HttpClient.";
+                _loading = false;
+                await OnError.InvokeAsync(_status);
+                return;
+            }
+            try
+            {
+                bytes = await http.GetByteArrayAsync(_source.Url);
+            }
+            catch (Exception ex)
+            {
+                _status = $"Failed to fetch document: {ex.Message}";
+                _loading = false;
+                await OnError.InvokeAsync(_status);
+                return;
+            }
+            if (version != _loadVersion)
+            {
+                return;
+            }
+        }
+        if (bytes is null)
+        {
+            _status = "No document loaded.";
+            _loading = false;
+            return;
+        }
+
         try
         {
             try
             {
-                _document = PdfDocument.Load(_source.Bytes, _source.Password);
+                _document = await ParseAsync(bytes, _source.Password);
             }
             catch (PdfPasswordException) when (OnPasswordRequested is not null)
             {
@@ -167,7 +245,12 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
                 {
                     throw;
                 }
-                _document = PdfDocument.Load(_source.Bytes, entered);
+                _document = await ParseAsync(bytes, entered);
+            }
+            // A password prompt may have awaited long enough for a newer Source.
+            if (version != _loadVersion)
+            {
+                return;
             }
             PreparePages();
             try
@@ -235,8 +318,11 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     {
         var page = _document!.Pages[index];
         _fontStore ??= new Core.Render.PdfFontStore();
-        string html = new Core.Render.HtmlRenderer(page, _document.XRef, _fontStore, _rotation).Render();
-        return new MarkupString(html);
+        var renderer = new Core.Render.HtmlRenderer(page, _document.XRef, _fontStore, _rotation)
+        {
+            DestinationResolver = dest => _document.ResolveDestinationPage(dest),
+        };
+        return new MarkupString(renderer.Render());
     }
 
     /// <summary>Renders a single page (1-based) to self-contained HTML, or an
@@ -286,40 +372,41 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
         if (changed)
         {
+            EvictDistantPages();
             StateHasChanged();
         }
     }
 
-    /// <summary>
-    /// Renders every page that is still a placeholder. Used before a full-text
-    /// search so matches on not-yet-viewed pages are found.
-    /// </summary>
-    private async Task RenderAllPagesAsync()
+    // Cap how many pages stay materialized so a large document does not grow the
+    // DOM (and Blazor Server circuit memory) unbounded. Evicted pages revert to
+    // placeholders and are re-rendered lazily when scrolled back into view.
+    private const int MaxRenderedPages = 24;
+
+    private void EvictDistantPages()
     {
-        if (_document is null)
+        int rendered = 0;
+        foreach (var p in _pages)
+        {
+            if (p is not null)
+            {
+                rendered++;
+            }
+        }
+        if (rendered <= MaxRenderedPages)
         {
             return;
         }
 
-        bool any = false;
+        // Keep a window centered on the current page; drop everything outside it.
+        int half = MaxRenderedPages / 2;
+        int keepLo = Math.Max(0, _currentPage - 1 - half);
+        int keepHi = Math.Min(_pages.Count - 1, _currentPage - 1 + half);
         for (int i = 0; i < _pages.Count; i++)
         {
-            if (_pages[i] is null)
+            if ((i < keepLo || i > keepHi) && _pages[i] is not null)
             {
-                _pages[i] = RenderPageContent(i);
-                any = true;
-                if (i % 4 == 0)
-                {
-                    StateHasChanged();
-                    await Task.Yield();
-                }
+                _pages[i] = null;
             }
-        }
-
-        if (any)
-        {
-            StateHasChanged();
-            await Task.Yield();
         }
     }
 
@@ -384,6 +471,14 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private async Task ZoomOut() => await SetCustomZoom(_zoom / 1.2);
 
+    /// <summary>Invoked from JavaScript on Ctrl+wheel / pinch to zoom.</summary>
+    [JSInvokable]
+    public async Task OnWheelZoom(double deltaY)
+    {
+        await SetCustomZoom(deltaY < 0 ? _zoom * 1.1 : _zoom / 1.1);
+        StateHasChanged();
+    }
+
     private Task SetCustomZoom(double zoom)
     {
         _zoomMode = PdfZoomMode.Custom;
@@ -444,8 +539,20 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             return;
         }
-        string base64 = Convert.ToBase64String(_source.Bytes);
-        await _module.InvokeVoidAsync("download", _source.FileName ?? "document.pdf", base64);
+        // Stream the bytes as a Blob rather than pushing a base64 data: URI (which
+        // on Blazor Server would traverse SignalR as one huge string).
+        using var stream = new MemoryStream(_source.Bytes, writable: false);
+        using var streamRef = new DotNetStreamReference(stream, leaveOpen: true);
+        try
+        {
+            await _module.InvokeVoidAsync("downloadStream", _source.FileName ?? "document.pdf", streamRef);
+        }
+        catch (JSException)
+        {
+            // Fall back to the base64 path if the streaming import is unavailable.
+            await _module.InvokeVoidAsync("download", _source.FileName ?? "document.pdf",
+                Convert.ToBase64String(_source.Bytes));
+        }
     }
 
     private async Task ToggleFullscreen()
@@ -545,6 +652,16 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         await RunSearchAsync();
     }
 
+    /// <summary>Activates a control on Enter or Space, so keyboard users can
+    /// operate the thumbnail list and outline tree like buttons.</summary>
+    private async Task OnActivateKey(KeyboardEventArgs e, Func<Task> action)
+    {
+        if (e.Key is "Enter" or " " or "Spacebar")
+        {
+            await action();
+        }
+    }
+
     private async Task OnSearchKeyDown(KeyboardEventArgs e)
     {
         if (e.Key == "Enter")
@@ -562,7 +679,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private async Task RunSearchAsync()
     {
-        if (_module is null)
+        if (_module is null || _document is null)
         {
             return;
         }
@@ -572,18 +689,32 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             return;
         }
 
-        // Full-text search reads the rendered DOM, so ensure every page is
-        // rendered first. Show the progress bar while catching up.
-        bool needsRender = _pages.Any(p => p is null);
-        if (needsRender)
+        _loading = true;
+        StateHasChanged();
+        await Task.Yield();
+
+        // Search a per-page extracted-text index (built lazily) rather than the
+        // rendered DOM, so we only render the pages that actually contain matches
+        // — a 500-page document with matches on 3 pages renders 3, not 500.
+        _pageText ??= new string?[_document.PageCount];
+        string needle = _searchQuery;
+        bool rendered = false;
+        for (int i = 0; i < _document.PageCount; i++)
         {
-            _loading = true;
+            _pageText[i] ??= _document.Pages[i].ExtractText();
+            if (_pageText[i]!.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                && i < _pages.Count && _pages[i] is null)
+            {
+                _pages[i] = RenderPageContent(i);
+                rendered = true;
+            }
+        }
+
+        _loading = false;
+        if (rendered)
+        {
             StateHasChanged();
-            await Task.Yield();
-            await RenderAllPagesAsync();
-            _loading = false;
-            StateHasChanged();
-            await Task.Yield();
+            await Task.Yield(); // let the freshly rendered pages paint before highlighting
         }
 
         _searchTotal = await _module.InvokeAsync<int>("searchAll", _containerRef, _searchQuery);
