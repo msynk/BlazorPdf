@@ -66,12 +66,14 @@ scheme-whitelisted clickable URI links).
 
 These degrade gracefully — affected pages still load:
 
-- **Bare CFF/Type1 embedded programs**: text renders via substitute fonts with
-  correct Unicode rather than the embedded glyph outlines (a browser cannot load a
-  bare CFF/PFB without OpenType wrapping and a synthetic cmap). Embedded
-  TrueType/OpenType fonts are emitted directly, after sfnt-structure sanitization
-  (directory sort, checksum/padding repair) so subset fonts pass the browser's
-  strict font parser.
+- **Bare CFF/Type1 embedded programs**: the glyph *shapes* render via a substitute
+  font (a browser cannot load a bare CFF/PFB without OpenType wrapping and a
+  synthetic cmap), but **spacing stays correct** — each text run is scaled
+  horizontally to its exact PDF advance (the pdf.js text-layer technique), so
+  substitute-font pages (e.g. LaTeX/Computer Modern) read correctly even though the
+  letterforms differ. Embedded TrueType/OpenType fonts are emitted directly, after
+  sfnt-structure sanitization (directory sort, checksum/padding repair) so subset
+  fonts pass the browser's strict font parser.
 - **JBIG2 and JPEG2000 images**: not decoded (large, specialized codecs); such
   images are skipped rather than rendered as noise.
 - **Progressive JPEG with CMYK**: the built-in decoder handles baseline sequential

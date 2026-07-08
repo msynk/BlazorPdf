@@ -18,6 +18,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private PdfSource? _source;
     private PdfDocument? _document;
     private Core.Render.PdfFontStore? _fontStore;
+    private bool _correctWidthsPending; // run the JS text width-correction after render
     private string?[]? _pageText; // lazily-built per-page text index for search
     private int _loadVersion; // bumped per load; guards against a superseded load committing
     private string _status = "Idle.";
@@ -147,6 +148,26 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             if (!string.IsNullOrEmpty(_searchQuery))
             {
                 await RunSearchAsync();
+            }
+        }
+
+        // After any render that produced new page content, correct each text run's
+        // width to its PDF advance (fixes spacing when a substitute font is used).
+        if (_correctWidthsPending && _module is not null)
+        {
+            _correctWidthsPending = false;
+            try
+            {
+                await _module.InvokeVoidAsync("correctTextWidths", _containerRef);
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit gone mid-render; ignore.
+            }
+            catch (JSException)
+            {
+                // Optional enhancement: a stale/cached script may not expose the
+                // function yet. Never let width correction break rendering.
             }
         }
     }
@@ -318,6 +339,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     {
         var page = _document!.Pages[index];
         _fontStore ??= new Core.Render.PdfFontStore();
+        _correctWidthsPending = true; // measure/scale text runs after this render
         var renderer = new Core.Render.HtmlRenderer(page, _document.XRef, _fontStore, _rotation)
         {
             DestinationResolver = dest => _document.ResolveDestinationPage(dest),

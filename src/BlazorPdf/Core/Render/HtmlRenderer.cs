@@ -1164,10 +1164,11 @@ public sealed class HtmlRenderer
 
         // Emit every non-empty run, including invisible modes 3/7 (OCR layers on
         // scanned PDFs) — they paint transparently but still participate in text
-        // selection and search, the product's headline feature.
+        // selection and search, the product's headline feature. `displacement` is
+        // the PDF-computed advance of the whole run, used for width correction.
         if (text.Length > 0)
         {
-            EmitText(text.ToString());
+            EmitText(text.ToString(), displacement);
         }
 
         _textMatrix = Matrix.Concat(_textMatrix, new Matrix(1, 0, 0, 1, displacement, 0));
@@ -1245,7 +1246,7 @@ public sealed class HtmlRenderer
         _formDepth--;
     }
 
-    private void EmitText(string text)
+    private void EmitText(string text, double runAdvance)
     {
         // Map em-space (origin at the baseline, y up) to device pixels.
         Matrix trm = Matrix.Concat(Matrix.Concat(_state.Ctm, _textMatrix),
@@ -1256,6 +1257,15 @@ public sealed class HtmlRenderer
         {
             return;
         }
+
+        // The run's target width in the span's LOCAL space (where 1em = fontHeight
+        // CSS px). Because the browser lays the run out with a *substitute* font
+        // whose metrics differ from the PDF font, the run would otherwise render
+        // too wide/narrow and collide with (or gap from) neighbouring runs. The
+        // viewer measures the natural width and applies scaleX(targetWidth /
+        // measured) via --bp-sx so the run occupies exactly its PDF advance.
+        double denom = _state.FontSize * _state.HorizScale;
+        double targetWidth = denom != 0 ? Math.Abs(runAdvance) * fontHeight / denom : 0;
 
         // Compose with a CSS-local -> em-space mapping so the <span> top-left and
         // alphabetic baseline land correctly (CSS y is down, baseline ~ascent).
@@ -1274,7 +1284,12 @@ public sealed class HtmlRenderer
         bool doFill = mode is 0 or 2 or 4 or 6;
         bool doStroke = mode is 1 or 2 or 5 or 6;
 
-        _html.Append("<span style=\"position:absolute;left:0;top:0;white-space:pre;line-height:1");
+        _html.Append("<span");
+        if (targetWidth > 0.01)
+        {
+            _html.Append(string.Create(CultureInfo.InvariantCulture, $" data-w=\"{targetWidth:0.###}\""));
+        }
+        _html.Append(" style=\"position:absolute;left:0;top:0;white-space:pre;line-height:1");
         _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
         _html.Append(";color:").Append(invisible || !doFill ? "transparent" : _state.FillColor);
         if (!invisible && doStroke)
@@ -1284,8 +1299,11 @@ public sealed class HtmlRenderer
                 $";-webkit-text-stroke:{sw:0.###}px ")).Append(_state.StrokeColor);
         }
         AppendFontStyle(_html, _state.Font!);
+        // scaleX(var(--bp-sx,1)) is applied in local space *before* the matrix, so
+        // the viewer can correct the run's horizontal extent to its PDF advance.
+        // Defaults to 1 (no correction) until the JS width pass runs.
         _html.Append(string.Create(CultureInfo.InvariantCulture,
-            $";transform:matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##});transform-origin:0 0"));
+            $";transform:matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##}) scaleX(var(--bp-sx,1));transform-origin:0 0"));
         // A watermark drawn with /ca must render at that opacity, like fills/images.
         if (!invisible && _state.FillAlpha < 1)
         {

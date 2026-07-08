@@ -194,6 +194,36 @@ export async function downloadStream(fileName, streamRef) {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+// Corrects each text run's horizontal extent to the PDF-computed advance stored
+// in its data-w attribute. Because runs are laid out with a substitute font when
+// the real font isn't embedded, their natural width differs from the PDF's; this
+// scales each run (via the --bp-sx custom property consumed by its transform) so
+// it occupies exactly its intended advance, restoring correct word spacing.
+export async function correctTextWidths(container) {
+    if (!container) {
+        return;
+    }
+    // Wait for any @font-face fonts to load so measurements are stable.
+    try {
+        if (document.fonts && document.fonts.ready) {
+            await document.fonts.ready;
+        }
+    } catch (e) {
+        /* ignore */
+    }
+
+    const spans = Array.prototype.slice.call(container.querySelectorAll("span[data-w]"));
+    // Batch all reads before all writes to avoid layout thrashing.
+    const naturalWidths = spans.map((s) => s.offsetWidth);
+    for (let i = 0; i < spans.length; i++) {
+        const target = parseFloat(spans[i].getAttribute("data-w"));
+        const natural = naturalWidths[i];
+        if (natural > 0 && target > 0) {
+            spans[i].style.setProperty("--bp-sx", (target / natural).toString());
+        }
+    }
+}
+
 export function toggleFullscreen(element) {
     if (!element) {
         return;
