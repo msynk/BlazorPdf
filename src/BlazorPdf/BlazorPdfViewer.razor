@@ -100,19 +100,23 @@
                 @RenderOutline(_outline)
             </div>
         }
-        @if (_showThumbnails && _pages.Count > 0)
+        @if (_showThumbnails && _thumbs.Count > 0)
         {
-            <div class="blazorpdf-thumbs" role="listbox" aria-label="Page thumbnails">
-                @for (int i = 0; i < _pages.Count; i++)
+            <div class="blazorpdf-thumbs" role="listbox" aria-label="Page thumbnails" @ref="_thumbsRef">
+                @for (int i = 0; i < _thumbs.Count; i++)
                 {
                     int pageNo = i + 1;
-                    <div class="blazorpdf-thumb @(pageNo == _currentPage ? "active" : "")"
+                    <div class="blazorpdf-thumb @(pageNo == _currentPage ? "active" : "")" data-thumb="@pageNo"
                          role="option" tabindex="0" aria-label="Page @pageNo" aria-selected="@(pageNo == _currentPage)"
                          @onclick="() => GoToPage(pageNo)" @onkeydown="e => OnActivateKey(e, () => GoToPage(pageNo))">
                         <div class="blazorpdf-thumb-svg" style="@ThumbStyle(i)">
-                            @if (_pages[i] is { } thumb)
+                            @if (_thumbs[i] is { } thumb)
                             {
                                 @thumb
+                            }
+                            else
+                            {
+                                <div class="blazorpdf-page-placeholder"></div>
                             }
                         </div>
                         <span class="blazorpdf-thumb-label">@pageNo</span>

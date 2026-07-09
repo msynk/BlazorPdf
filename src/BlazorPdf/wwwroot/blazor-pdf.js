@@ -170,6 +170,91 @@ export function disposeScrollSpy(container) {
     }
 }
 
+// ----- Thumbnail sidebar (its own lazy-render cycle) -----
+//
+// The sidebar renders thumbnails on demand as they scroll into its own viewport,
+// independent of the main surface — mirroring pdf.js's PDFThumbnailViewer. Its
+// element only exists in the DOM while the panel is open, so registration is
+// driven from .NET after that element renders.
+
+function scheduleThumbRender(container, dotnetRef) {
+    if (!container || !dotnetRef || container.__bpfThumbScheduled) {
+        return;
+    }
+    container.__bpfThumbScheduled = true;
+    requestAnimationFrame(() => {
+        container.__bpfThumbScheduled = false;
+        renderVisibleThumbs(container, dotnetRef);
+    });
+}
+
+// Works out which thumbnails fall within the sidebar viewport (plus a buffer)
+// and asks .NET to render any that are still placeholders.
+function renderVisibleThumbs(container, dotnetRef) {
+    const thumbs = container.querySelectorAll("[data-thumb]");
+    if (!thumbs.length) {
+        return;
+    }
+    const rect = container.getBoundingClientRect();
+    const buffer = Math.max(container.clientHeight, 400);
+    const lo = rect.top - buffer;
+    const hi = rect.bottom + buffer;
+
+    const needed = [];
+    for (const thumb of thumbs) {
+        const r = thumb.getBoundingClientRect();
+        if (r.bottom >= lo && r.top <= hi) {
+            const n = parseInt(thumb.getAttribute("data-thumb"), 10);
+            if (!Number.isNaN(n)) {
+                needed.push(n);
+            }
+        }
+    }
+    if (needed.length) {
+        dotnetRef.invokeMethodAsync("EnsureThumbsRendered", needed);
+    }
+}
+
+export function registerThumbSpy(container, dotnetRef) {
+    if (!container) {
+        return;
+    }
+    disposeThumbSpy(container);
+    container.__bpfThumbDotnet = dotnetRef;
+    const onScroll = () => scheduleThumbRender(container, dotnetRef);
+    container.addEventListener("scroll", onScroll, { passive: true });
+    container.__bpfThumbScroll = onScroll;
+    scheduleThumbRender(container, dotnetRef); // initial fill
+}
+
+export function disposeThumbSpy(container) {
+    if (!container) {
+        return;
+    }
+    if (container.__bpfThumbScroll) {
+        container.removeEventListener("scroll", container.__bpfThumbScroll);
+        container.__bpfThumbScroll = null;
+    }
+    container.__bpfThumbDotnet = null;
+    container.__bpfThumbScheduled = false;
+}
+
+// Keeps the active thumbnail visible in the sidebar as the current page changes.
+// Scrolls the minimum amount (block:"nearest") so it never fights the user, then
+// nudges the lazy renderer to fill anything the scroll brought into view.
+export function scrollThumbIntoView(container, pageNumber) {
+    if (!container) {
+        return;
+    }
+    const target = container.querySelector(`[data-thumb='${pageNumber}']`);
+    if (target) {
+        target.scrollIntoView({ block: "nearest" });
+        if (container.__bpfThumbDotnet) {
+            scheduleThumbRender(container, container.__bpfThumbDotnet);
+        }
+    }
+}
+
 export function download(fileName, base64) {
     const link = document.createElement("a");
     link.href = "data:application/pdf;base64," + base64;

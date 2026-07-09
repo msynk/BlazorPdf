@@ -30,6 +30,12 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private readonly List<double> _pageWidths = new();  // points, display orientation
     private readonly List<double> _pageHeights = new();
 
+    // The thumbnail sidebar owns its own render slots, decoupled from _pages, so
+    // it can lazy-render only the thumbnails scrolled into the sidebar viewport
+    // (like pdf.js) instead of mirroring whatever the main surface happens to
+    // have rendered. A null slot is a not-yet-rendered thumbnail placeholder.
+    private readonly List<MarkupString?> _thumbs = new();
+
     private int _currentPage = 1;
     private double _zoom = 1.0;
     private PdfZoomMode _zoomMode = PdfZoomMode.FitWidth;
@@ -43,11 +49,21 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private int _searchTotal;
     private int _searchIndex = -1;
 
+    // Cache-busts the JS module import. The module ships inside this assembly and
+    // is served from a fixed URL with no content hash, so browsers would cache it
+    // across rebuilds — leaving a stale script that lacks newly added functions.
+    // The module version id changes on every compilation, so a rebuilt library
+    // always loads its matching script.
+    private static readonly string AssetVersion =
+        typeof(BlazorPdfViewer).Assembly.ManifestModule.ModuleVersionId.ToString("N");
+
     private IJSObjectReference? _module;
     private DotNetObjectReference<BlazorPdfViewer>? _dotNetRef;
     private ElementReference _containerRef;
+    private ElementReference _thumbsRef;
     private ElementReference _viewerRef;
     private bool _spyPending;
+    private bool _thumbSpyPending; // (re)attach the sidebar's lazy-render spy after render
 
     /// <summary>The document to display.</summary>
     [Parameter] public PdfSource? Source { get; set; }
@@ -136,7 +152,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         if (firstRender)
         {
             _module = await JS.InvokeAsync<IJSObjectReference>(
-                "import", "./_content/BlazorPdf/blazor-pdf.js");
+                "import", $"./_content/BlazorPdf/blazor-pdf.js?v={AssetVersion}");
             _dotNetRef = DotNetObjectReference.Create(this);
         }
 
@@ -148,6 +164,31 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             if (!string.IsNullOrEmpty(_searchQuery))
             {
                 await RunSearchAsync();
+            }
+        }
+
+        // Attach the sidebar's own lazy-render spy once its element exists in the
+        // DOM (it is only present while the thumbnail panel is open). The spy
+        // fills the visible thumbnails on its own scroll, independent of the main
+        // surface. Registration is idempotent, so re-running it after a reload or
+        // rotation simply re-fills the freshly reset slots.
+        if (_thumbSpyPending && _showThumbnails && _module is not null && _dotNetRef is not null)
+        {
+            _thumbSpyPending = false;
+            try
+            {
+                await _module.InvokeVoidAsync("registerThumbSpy", _thumbsRef, _dotNetRef);
+                await _module.InvokeVoidAsync("scrollThumbIntoView", _thumbsRef, _currentPage);
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit gone mid-render; ignore.
+            }
+            catch (JSException)
+            {
+                // A stale/cached script may not expose the sidebar functions yet;
+                // the panel still shows the eagerly-rendered thumbnails. A refresh
+                // (new script) restores lazy loading.
             }
         }
 
@@ -310,6 +351,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private void PreparePages()
     {
         _pages.Clear();
+        _thumbs.Clear();
         _pageWidths.Clear();
         _pageHeights.Clear();
         if (_document is null)
@@ -321,6 +363,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         foreach (var page in _document.Pages)
         {
             _pages.Add(null);
+            _thumbs.Add(null);
             _pageWidths.Add(swap ? page.Height : page.Width);
             _pageHeights.Add(swap ? page.Width : page.Height);
         }
@@ -331,6 +374,13 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         for (int i = Math.Max(0, center - 1); i <= Math.Min(_pages.Count - 1, center + 1); i++)
         {
             _pages[i] = RenderPageContent(i);
+        }
+
+        // If the sidebar is open, its slots were just reset; let its spy re-fill
+        // the visible thumbnails on the next render.
+        if (_showThumbnails)
+        {
+            _thumbSpyPending = true;
         }
     }
 
@@ -436,6 +486,93 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Renders the fragment shown in a thumbnail. The markup is identical to the
+    /// full page (only the enclosing <c>--bp-scale</c> differs), so when the main
+    /// surface has already rendered this page we reuse its immutable fragment;
+    /// otherwise we render one just for the sidebar. Either way the thumbnail is
+    /// cached in its own slot and survives the main page's eviction.
+    /// </summary>
+    private MarkupString RenderThumbContent(int index)
+        => _pages[index] ?? RenderPageContent(index);
+
+    /// <summary>
+    /// Invoked from JavaScript as thumbnails approach the sidebar viewport.
+    /// Renders any requested thumbnails that are still placeholders. This is the
+    /// sidebar's counterpart to <see cref="EnsurePagesRendered"/> and runs on the
+    /// sidebar's own scroll, so opening the panel on a 500-page document renders
+    /// only the handful of thumbnails on screen.
+    /// </summary>
+    [JSInvokable]
+    public void EnsureThumbsRendered(int[] pageNumbers)
+    {
+        if (_document is null || pageNumbers is null)
+        {
+            return;
+        }
+
+        bool changed = false;
+        int lo = int.MaxValue, hi = int.MinValue;
+        foreach (int n in pageNumbers)
+        {
+            int idx = n - 1;
+            if (idx >= 0 && idx < _thumbs.Count)
+            {
+                lo = Math.Min(lo, idx);
+                hi = Math.Max(hi, idx);
+                if (_thumbs[idx] is null)
+                {
+                    _thumbs[idx] = RenderThumbContent(idx);
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+        {
+            // Evict around the range just requested (what is visible in the
+            // sidebar), not the current page — scrolling the sidebar leaves the
+            // current page put, so centering on it would blank the very
+            // thumbnails the user just scrolled to.
+            EvictDistantThumbs(lo, hi);
+            StateHasChanged();
+        }
+    }
+
+    // Bound how many thumbnails stay materialized. A thumbnail fragment is as
+    // heavy as a full page, so a large document scrolled end-to-end in the
+    // sidebar would otherwise pin every page's markup in memory.
+    private const int MaxRenderedThumbs = 40;
+
+    private void EvictDistantThumbs(int visibleLo, int visibleHi)
+    {
+        int rendered = 0;
+        foreach (var t in _thumbs)
+        {
+            if (t is not null)
+            {
+                rendered++;
+            }
+        }
+        if (rendered <= MaxRenderedThumbs)
+        {
+            return;
+        }
+
+        // Keep the visible range plus an equal margin on each side, so nearby
+        // thumbnails are already warm when the user keeps scrolling.
+        int margin = Math.Max(0, (MaxRenderedThumbs - (visibleHi - visibleLo + 1)) / 2);
+        int keepLo = Math.Max(0, visibleLo - margin);
+        int keepHi = Math.Min(_thumbs.Count - 1, visibleHi + margin);
+        for (int i = 0; i < _thumbs.Count; i++)
+        {
+            if ((i < keepLo || i > keepHi) && _thumbs[i] is not null)
+            {
+                _thumbs[i] = null;
+            }
+        }
+    }
+
     // ----- Navigation -----
 
     private Task NextPage() => GoToPage(_currentPage + 1);
@@ -457,6 +594,30 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         if (_module is not null)
         {
             await _module.InvokeVoidAsync("scrollToPage", _containerRef, _currentPage);
+            if (_showThumbnails)
+            {
+                await ScrollActiveThumbIntoViewAsync();
+            }
+        }
+    }
+
+    // Keeps the sidebar's active thumbnail in view, tolerating a stale cached
+    // script that predates the sidebar functions (degrades to no auto-follow).
+    private async Task ScrollActiveThumbIntoViewAsync()
+    {
+        if (_module is null)
+        {
+            return;
+        }
+        try
+        {
+            await _module.InvokeVoidAsync("scrollThumbIntoView", _thumbsRef, _currentPage);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (JSException)
+        {
         }
     }
 
@@ -476,6 +637,12 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             _currentPage = pageNumber;
             _ = OnPageChanged.InvokeAsync(pageNumber);
+            // Keep the sidebar's active thumbnail in view as the main surface
+            // scrolls, so lazy-loaded thumbnails follow the reader.
+            if (_showThumbnails && _module is not null)
+            {
+                _ = ScrollActiveThumbIntoViewAsync();
+            }
             StateHasChanged();
         }
     }
@@ -624,12 +791,27 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         await _module.InvokeVoidAsync("printDocument", _containerRef);
     }
 
-    private void ToggleThumbnails()
+    private async Task ToggleThumbnails()
     {
         _showThumbnails = !_showThumbnails;
         if (_showThumbnails)
         {
             _showOutline = false;
+            // Attach the sidebar spy after its element renders; it fills the
+            // visible thumbnails on its own.
+            _thumbSpyPending = true;
+        }
+        else if (_module is not null)
+        {
+            // The sidebar element is leaving the DOM; drop its scroll listener.
+            try
+            {
+                await _module.InvokeVoidAsync("disposeThumbSpy", _thumbsRef);
+            }
+            catch (JSException)
+            {
+                // Element already gone / module unavailable; nothing to clean up.
+            }
         }
     }
 
@@ -800,6 +982,15 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             if (_module is not null)
             {
                 await _module.InvokeVoidAsync("disposeScrollSpy", _containerRef);
+                try
+                {
+                    await _module.InvokeVoidAsync("disposeThumbSpy", _thumbsRef);
+                }
+                catch (JSException)
+                {
+                    // Stale cached script without the sidebar functions; nothing
+                    // to tear down.
+                }
                 await _module.DisposeAsync();
             }
         }
