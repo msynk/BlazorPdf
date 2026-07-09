@@ -28,17 +28,47 @@ public class TrueTypeSanitizerTests
         // Valid sfnt header.
         Assert.Equal(0x00010000u, ReadU32(clean!, 0));
         int n = (clean![4] << 8) | clean[5];
-        Assert.Equal(3, n);
+        // 3 originals + synthesized OS/2, name, post = 6.
+        Assert.Equal(6, n);
 
-        // Directory tags must now be ascending: head < hhea < maxp.
-        uint t0 = ReadU32(clean, 12);
-        uint t1 = ReadU32(clean, 12 + 16);
-        uint t2 = ReadU32(clean, 12 + 32);
-        Assert.True(t0 < t1 && t1 < t2, "directory not sorted ascending");
+        // Directory tags must be ascending across all records.
+        for (int i = 1; i < n; i++)
+        {
+            Assert.True(ReadU32(clean, 12 + (i - 1) * 16) < ReadU32(clean, 12 + i * 16),
+                "directory not sorted ascending");
+        }
 
         // The whole-file checksum must satisfy the head.checkSumAdjustment rule:
         // 0xB1B0AFBA - fileChecksum == checkSumAdjustment.
         Assert.True(HeadChecksumValid(clean), "head.checkSumAdjustment is not consistent");
+    }
+
+    [Fact]
+    public void Synthesizes_missing_os2_name_post()
+    {
+        // A subset font lacking OS/2, name and post — OTS requires them.
+        byte[] font = BuildFont(new[] { "head", "hhea", "maxp", "cmap" });
+        byte[]? clean = TrueTypeSanitizer.Sanitize(font);
+
+        Assert.NotNull(clean);
+        Assert.True(HasTable(clean!, "OS/2"), "OS/2 not synthesized");
+        Assert.True(HasTable(clean!, "name"), "name not synthesized");
+        Assert.True(HasTable(clean!, "post"), "post not synthesized");
+    }
+
+    private static bool HasTable(byte[] font, string tag)
+    {
+        int n = (font[4] << 8) | font[5];
+        for (int i = 0; i < n; i++)
+        {
+            int rec = 12 + i * 16;
+            if ((char)font[rec] == tag[0] && (char)font[rec + 1] == tag[1]
+                && (char)font[rec + 2] == tag[2] && (char)font[rec + 3] == tag[3])
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     [Fact]

@@ -122,6 +122,9 @@
         }
 
         <div class="blazorpdf-surface" @ref="_containerRef">
+            @* Document-wide @@font-face rules, kept here (not per page) so they
+               survive page eviction while scrolling. *@
+            @FontFaceStyleMarkup
             @if (_source is null)
             {
                 <div class="blazorpdf-empty">No document loaded.</div>

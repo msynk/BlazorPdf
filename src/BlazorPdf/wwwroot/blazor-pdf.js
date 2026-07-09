@@ -352,7 +352,15 @@ export function searchAll(container, query) {
     const ranges = [];
 
     container.querySelectorAll("[data-page]").forEach((page) => {
-        const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
+        // Skip the painted-glyph layer ([data-bp-glyph]) — it holds Private-Use
+        // codepoints, not real text; search the selectable/real-Unicode spans.
+        const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
+            acceptNode(n) {
+                return n.parentElement && n.parentElement.hasAttribute("data-bp-glyph")
+                    ? NodeFilter.FILTER_REJECT
+                    : NodeFilter.FILTER_ACCEPT;
+            },
+        });
         const nodes = [];
         let text = "";
         let node;

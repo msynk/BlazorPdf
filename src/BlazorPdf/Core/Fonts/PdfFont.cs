@@ -24,6 +24,49 @@ public sealed class PdfFont
     private CMap _cidEncoding = CMap.Identity;   // Type0 code -> CID mapping
     private double _glyphWidthScale = 1.0;      // maps raw widths to 1000-em (Type3)
 
+    // Glyph-based painting via Private-Use-Area codepoints: the browser renders
+    // the *exact* glyph (no shaping, no Unicode collisions). Simple fonts map
+    // PUA = 0xE000 + code; Type0 (CID) fonts map PUA = 0xE000 + glyph-id. The real
+    // Unicode is kept on a parallel invisible layer for selection/search.
+    private HashSet<int>? _glyphMappedCodes;   // simple fonts
+    private Func<int, int>? _gidForCid;         // Type0: CID -> glyph id
+    private int _maxPuaGid;                     // exclusive upper bound of mapped gids
+
+    /// <summary>The base of the Private-Use-Area range used for glyph mapping.</summary>
+    internal const int GlyphPua = 0xE000;
+
+    /// <summary>The size of the usable PUA range (0xE000..0xF8FF).</summary>
+    internal const int GlyphPuaSize = 0xF900 - 0xE000;
+
+    /// <summary><c>true</c> when this font paints glyphs via PUA codepoints.</summary>
+    public bool UsesGlyphMap => _glyphMappedCodes is not null || _gidForCid is not null;
+
+    /// <summary>
+    /// The Private-Use-Area codepoint to paint for <paramref name="code"/> so its
+    /// exact glyph renders, or -1 when the code isn't glyph-mapped (paint Unicode).
+    /// </summary>
+    public int GlyphPuaChar(int code)
+    {
+        if (_glyphMappedCodes is not null)
+        {
+            return _glyphMappedCodes.Contains(code) ? GlyphPua + code : -1;
+        }
+        if (_gidForCid is not null)
+        {
+            int gid = _gidForCid(_cidEncoding.Lookup(code));
+            return gid >= 0 && gid < _maxPuaGid ? GlyphPua + gid : -1;
+        }
+        return -1;
+    }
+
+    private void SetGlyphMap(HashSet<int> codes) => _glyphMappedCodes = codes.Count > 0 ? codes : null;
+
+    private void SetType0GlyphMap(Func<int, int> gidForCid, int maxGid)
+    {
+        _gidForCid = gidForCid;
+        _maxPuaGid = maxGid;
+    }
+
     /// <summary>Type3 glyph data (glyph procedures), when the font is a Type3 font.</summary>
     public Type3FontData? Type3 { get; private set; }
 
@@ -125,14 +168,195 @@ public sealed class PdfFont
         }
 
         (byte[]? program, string? format) = ExtractEmbedded(descriptor);
-        bool bold = InferBold(baseFont, descriptor);
-        bool italic = InferItalic(baseFont, descriptor);
+
+        // Sanitize an embedded TrueType now that the encoding is known: fix the
+        // sfnt structure, add required tables, and inject a synthetic Unicode cmap
+        // mapping the codepoints we emit to the right glyphs (so subset fonts whose
+        // own cmap OTS rejects still render). Falls back to the raw bytes.
+        if (format == "truetype" && program is not null)
+        {
+            program = font._isType0
+                ? FixType0TrueType(program!, font, fontDict, xref) ?? program
+                : FixTrueType(program!, font, descriptor) ?? program;
+        }
+        else if (format == "cff" && program is not null)
+        {
+            (program, format) = font._isType0
+                ? FixType0Cff(program!, font)
+                : FixCff(program!, font, fontDict);
+        }
 
         font.EmbeddedProgram = program;
         font.EmbeddedFormat = format;
-        font.Bold = bold;
-        font.Italic = italic;
+        font.Bold = InferBold(baseFont, descriptor);
+        font.Italic = InferItalic(baseFont, descriptor);
         return font;
+    }
+
+    // Wraps a bare CFF (/FontFile3 /Type1C) in OpenType with a synthetic cmap;
+    // returns (null, "cff") to fall back to a substitute when unsupported.
+    private static (byte[]?, string) FixCff(byte[] cff, PdfFont font, Dict fontDict)
+    {
+        var parser = CffFontParser.Parse(cff);
+        if (parser is null || parser.IsCid || font._isType0)
+        {
+            return (null, "cff");
+        }
+
+        // Map each character code to a unique Private-Use-Area codepoint so that
+        // distinct glyphs sharing one Unicode value (lowercase 'a' at 0x61 vs
+        // small-cap 'A' at 0xFF) never collide. The renderer paints these PUA
+        // codepoints; the real Unicode is preserved on the selection layer.
+        var map = new Dictionary<int, int>();
+        var mappedCodes = new HashSet<int>();
+        var advances = new int[parser.NumGlyphs]; // glyph-id -> advance (1000-em)
+        for (int code = 0; code < 256; code++)
+        {
+            string? name = font._encoding is not null && code < font._encoding.Length
+                && font._encoding[code] is { Length: > 0 } nm ? nm : null;
+
+            // Resolve the glyph id: the PDF encoding's name via the CFF charset
+            // first (honors /Differences), then the font's built-in Encoding.
+            int gid = -1;
+            if (name is not null && parser.NameToGid.TryGetValue(name, out int g1))
+            {
+                gid = g1;
+            }
+            else if (parser.CodeToGid.TryGetValue(code, out int g2))
+            {
+                gid = g2;
+            }
+            if (gid <= 0)
+            {
+                continue;
+            }
+
+            map[GlyphPua + code] = gid;
+            mappedCodes.Add(code);
+            if (gid < advances.Length)
+            {
+                advances[gid] = (int)Math.Round(font.WidthFor(code)); // real per-glyph advance
+            }
+        }
+
+        if (map.Count == 0)
+        {
+            return (null, "cff");
+        }
+        byte[] cmap = CmapBuilder.BuildUnicodeCmap(map);
+        byte[]? otf = CffFontWriter.WrapBareCff(cff, parser.NumGlyphs, parser.FontMatrix, cmap, "BlazorPdfCff", advances);
+        if (otf is null)
+        {
+            return (null, "cff");
+        }
+        font.SetGlyphMap(mappedCodes);
+        return (otf, "opentype");
+    }
+
+    // Glyph-maps a Type0 CIDFontType2 (TrueType CID) font: paints each glyph by
+    // its exact glyph id via a PUA cmap, so Arabic/Persian and other complex
+    // scripts render the PDF's positioned glyphs instead of browser-reshaped text.
+    private static byte[]? FixType0TrueType(byte[] program, PdfFont font, Dict fontDict, IXRef xref)
+    {
+        if (fontDict.Get("DescendantFonts") is not List<object?> desc || desc.Count == 0
+            || xref.FetchIfRef(desc[0]) is not Dict cidFont
+            || (cidFont.Get("Subtype") as Name)?.Value != "CIDFontType2")
+        {
+            return null; // only TrueType-CID here; CIDFontType0 (CFF) is separate
+        }
+
+        int numGlyphs = SfntGlyphMapper.ReadNumGlyphs(program);
+        if (numGlyphs <= 0)
+        {
+            return null;
+        }
+
+        // CIDToGIDMap: /Identity (gid == CID) or a stream of 2-byte gids per CID.
+        Func<int, int> gidForCid = cid => cid;
+        if (xref.FetchIfRef(cidFont.Get("CIDToGIDMap")) is PdfStream mapStream)
+        {
+            byte[] d = StreamDecoder.Decode(mapStream);
+            gidForCid = cid => cid >= 0 && cid * 2 + 1 < d.Length ? (d[cid * 2] << 8) | d[cid * 2 + 1] : 0;
+        }
+
+        int max = Math.Min(numGlyphs, GlyphPuaSize);
+        byte[] cmap = BuildGidPuaCmap(max);
+        byte[]? sanitized = TrueTypeSanitizer.Sanitize(program, cmap);
+        if (sanitized is null)
+        {
+            return null;
+        }
+        font.SetType0GlyphMap(gidForCid, max);
+        return sanitized;
+    }
+
+    // Wraps a CID-keyed bare CFF (/FontFile3 /CIDFontType0C) in OpenType with a
+    // per-glyph-id PUA cmap; resolves code -> CID -> glyph id via the CFF charset.
+    private static (byte[]?, string) FixType0Cff(byte[] cff, PdfFont font)
+    {
+        var parser = CffFontParser.Parse(cff);
+        if (parser is null || !parser.IsCid || parser.NumGlyphs <= 0)
+        {
+            return (null, "cff");
+        }
+        int max = Math.Min(parser.NumGlyphs, GlyphPuaSize);
+        byte[] cmap = BuildGidPuaCmap(max);
+
+        // Per-glyph advances (glyph-id indexed, 1000-em) from the CID /W widths.
+        var advances = new int[parser.NumGlyphs];
+        foreach (var (cid, gid) in parser.CidToGid)
+        {
+            if (gid >= 0 && gid < advances.Length)
+            {
+                advances[gid] = (int)Math.Round(font._cidWidths.TryGetValue(cid, out var w) ? w : font._defaultWidth);
+            }
+        }
+
+        byte[]? otf = CffFontWriter.WrapBareCff(cff, parser.NumGlyphs, parser.FontMatrix, cmap, "BlazorPdfCidCff", advances);
+        if (otf is null)
+        {
+            return (null, "cff");
+        }
+        var cidToGid = parser.CidToGid;
+        font.SetType0GlyphMap(cid => cidToGid.GetValueOrDefault(cid, 0), max);
+        return (otf, "opentype");
+    }
+
+    // A PUA codepoint per glyph id (0xE000 + gid), one contiguous cmap segment.
+    private static byte[] BuildGidPuaCmap(int count)
+    {
+        var map = new Dictionary<int, int>(count);
+        for (int gid = 0; gid < count; gid++)
+        {
+            map[GlyphPua + gid] = gid;
+        }
+        return CmapBuilder.BuildUnicodeCmap(map);
+    }
+
+    private static byte[]? FixTrueType(byte[] program, PdfFont font, Dict? descriptor)
+    {
+        byte[]? syntheticCmap = null;
+        if (!font._isType0 && font._encoding is not null)
+        {
+            bool symbolic = descriptor?.Get("Flags") is double fl && ((int)fl & 0x4) != 0;
+            syntheticCmap = SfntGlyphMapper.BuildSyntheticCmap(program, font._encoding, symbolic,
+                font.UnicodeFor, out var mappedCodes);
+            if (syntheticCmap is not null)
+            {
+                font.SetGlyphMap(mappedCodes);
+            }
+        }
+        return TrueTypeSanitizer.Sanitize(program, syntheticCmap);
+    }
+
+    // A valid, non-empty PostScript-style name for the generated font (subset
+    // prefix stripped, punctuation removed).
+    private static string Sanitize(string name)
+    {
+        int plus = name.IndexOf('+');
+        string n = plus == 6 ? name[(plus + 1)..] : name;
+        var chars = n.Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_').ToArray();
+        return chars.Length > 0 ? new string(chars) : "BlazorPdfType1";
     }
 
     private static (byte[]?, string?) ExtractEmbedded(Dict? descriptor)
@@ -143,21 +367,37 @@ public sealed class PdfFont
         }
         try
         {
-            // TrueType / CIDFontType2 program. Normalize the sfnt structure so a
-            // subset font with an unsorted directory or bad checksums still loads
-            // in the browser; keep the raw bytes if it isn't a parseable sfnt.
+            // TrueType / CIDFontType2 program. Sanitizing (with a synthetic cmap)
+            // happens in Create once the font's encoding is known.
             if (descriptor.Get("FontFile2") is PdfStream ttf)
             {
-                byte[] raw = StreamDecoder.Decode(ttf);
-                return (TrueTypeSanitizer.Sanitize(raw) ?? raw, "truetype");
+                return (StreamDecoder.Decode(ttf), "truetype");
             }
-            // OpenType program (FontFile3 with Subtype OpenType).
-            if (descriptor.Get("FontFile3") is PdfStream ot && ot.Dict is not null
-                && (ot.Dict.Get("Subtype") as Name)?.Value == "OpenType")
+            // FontFile3: OpenType passes through; Type1C/CIDFontType0C is bare CFF,
+            // wrapped in Create once the encoding is known.
+            if (descriptor.Get("FontFile3") is PdfStream ff3 && ff3.Dict is not null)
             {
-                return (StreamDecoder.Decode(ot), "opentype");
+                byte[] data = StreamDecoder.Decode(ff3);
+                return (ff3.Dict.Get("Subtype") as Name)?.Value == "OpenType"
+                    ? (data, "opentype")
+                    : (data, "cff");
             }
-            // Bare CFF / Type1 programs need wrapping the browser can't do directly.
+            // Type1 program (/FontFile): parse it and build an OpenType/CFF font the
+            // browser can load. On any failure fall through to a substitute font —
+            // a rejected @font-face simply falls back to the generic family.
+            if (descriptor.Get("FontFile") is PdfStream t1Stream)
+            {
+                byte[] raw = StreamDecoder.Decode(t1Stream);
+                if (Type1Font.Parse(raw) is { } t1)
+                {
+                    string psName = (descriptor.Get("FontName") as Name)?.Value ?? "BlazorPdfType1";
+                    if (CffFontWriter.FromType1(t1, Sanitize(psName)) is { } otf)
+                    {
+                        return (otf, "opentype");
+                    }
+                }
+            }
+            // Bare CFF (FontFile3 /Type1C) still needs a CFF parser; substituted for now.
         }
         catch
         {

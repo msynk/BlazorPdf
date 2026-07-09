@@ -57,6 +57,7 @@ public sealed class HtmlRenderer
     private readonly StringBuilder _fontFaces;         // document-wide accumulator (shared)
     private readonly HashSet<string> _emittedFamilies; // dedup across pages (shared)
     private readonly StringBuilder _pageFaces = new();  // faces first seen on THIS page
+    private readonly bool _ownFontFaces;                // emit faces inline (no shared store)
     private readonly Dictionary<object, string?> _patternCache = new();
     private StringBuilder _html = new();
     private int _openGroups;
@@ -94,12 +95,14 @@ public sealed class HtmlRenderer
             _fontCache = fontStore.Fonts;
             _emittedFamilies = fontStore.EmittedFamilies;
             _fontFaces = fontStore.FontFaces;
+            _ownFontFaces = false; // the viewer emits the shared @font-face style
         }
         else
         {
             _fontCache = new Dictionary<object, PdfFont>();
             _emittedFamilies = new HashSet<string>();
             _fontFaces = new StringBuilder();
+            _ownFontFaces = true;
         }
     }
 
@@ -145,9 +148,11 @@ public sealed class HtmlRenderer
         var sb = new StringBuilder();
         sb.Append(string.Create(CultureInfo.InvariantCulture,
             $"<div class=\"bp-html-page\" style=\"position:absolute;left:0;top:0;width:{viewW:0.##}px;height:{viewH:0.##}px;overflow:hidden;background:#fff;color:#000;transform:scale(var(--bp-scale,1));transform-origin:top left\">"));
-        // Emit only the @font-face rules first seen on THIS page, so a shared
-        // document store never repeats a font's base64 payload across pages.
-        if (_pageFaces.Length > 0)
+        // A self-contained page inlines its own @font-face rules. With a shared
+        // document store the viewer emits them in a persistent <style> instead, so
+        // they survive page eviction (an evicted page's inline <style> would be
+        // removed while the dedup set still thinks the font was emitted → tofu).
+        if (_ownFontFaces && _pageFaces.Length > 0)
         {
             sb.Append("<style>").Append(_pageFaces).Append("</style>");
         }
@@ -1151,24 +1156,38 @@ public sealed class HtmlRenderer
             return;
         }
 
-        var text = new StringBuilder();
+        // `render` is what the browser paints; `real` is the selectable/searchable
+        // text. For a glyph-mapped embedded font they differ: render uses a
+        // per-code Private-Use-Area codepoint so the exact glyph is painted (no
+        // shaping, no Unicode collisions), while real keeps the true Unicode.
+        var render = new StringBuilder();
+        var real = new StringBuilder();
+        bool glyphMapped = _state.Font.UsesGlyphMap;
         double displacement = 0;
 
         foreach (var g in glyphs)
         {
-            text.Append(g.Unicode);
+            real.Append(g.Unicode);
+            int pua = glyphMapped ? _state.Font.GlyphPuaChar(g.Code) : -1;
+            if (pua >= 0)
+            {
+                render.Append((char)pua);
+            }
+            else
+            {
+                render.Append(g.Unicode);
+            }
             double w0 = g.Width1000 / 1000.0 * _state.FontSize;
             double spacing = _state.CharSpacing + (g.IsSpace ? _state.WordSpacing : 0);
             displacement += (w0 + spacing) * _state.HorizScale;
         }
 
         // Emit every non-empty run, including invisible modes 3/7 (OCR layers on
-        // scanned PDFs) — they paint transparently but still participate in text
-        // selection and search, the product's headline feature. `displacement` is
-        // the PDF-computed advance of the whole run, used for width correction.
-        if (text.Length > 0)
+        // scanned PDFs). `displacement` is the PDF-computed advance, used for width
+        // correction.
+        if (render.Length > 0)
         {
-            EmitText(text.ToString(), displacement);
+            EmitText(render.ToString(), real.ToString(), displacement);
         }
 
         _textMatrix = Matrix.Concat(_textMatrix, new Matrix(1, 0, 0, 1, displacement, 0));
@@ -1246,7 +1265,7 @@ public sealed class HtmlRenderer
         _formDepth--;
     }
 
-    private void EmitText(string text, double runAdvance)
+    private void EmitText(string renderText, string realText, double runAdvance)
     {
         // Map em-space (origin at the baseline, y up) to device pixels.
         Matrix trm = Matrix.Concat(Matrix.Concat(_state.Ctm, _textMatrix),
@@ -1258,39 +1277,76 @@ public sealed class HtmlRenderer
             return;
         }
 
-        // The run's target width in the span's LOCAL space (where 1em = fontHeight
-        // CSS px). Because the browser lays the run out with a *substitute* font
-        // whose metrics differ from the PDF font, the run would otherwise render
-        // too wide/narrow and collide with (or gap from) neighbouring runs. The
-        // viewer measures the natural width and applies scaleX(targetWidth /
-        // measured) via --bp-sx so the run occupies exactly its PDF advance.
+        // Target width in the span's LOCAL space (1em = fontHeight CSS px); the
+        // viewer scales each run to this via --bp-sx so a substitute font's metrics
+        // don't shift neighbouring runs.
         double denom = _state.FontSize * _state.HorizScale;
         double targetWidth = denom != 0 ? Math.Abs(runAdvance) * fontHeight / denom : 0;
 
-        // Compose with a CSS-local -> em-space mapping so the <span> top-left and
-        // alphabetic baseline land correctly (CSS y is down, baseline ~ascent).
         double a = trm.A / fontHeight;
         double b = trm.B / fontHeight;
         double c = -trm.C / fontHeight;
         double d = -trm.D / fontHeight;
         double e = trm.C * AscentFactor + trm.E;
         double f = trm.D * AscentFactor + trm.F;
+        string transform = string.Create(CultureInfo.InvariantCulture,
+            $"matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##}) scaleX(var(--bp-sx,1))");
 
-        // Text render modes (Tr): 0 fill, 1 stroke, 2 fill+stroke, 3 invisible,
-        // 4-6 the same plus clip, 7 clip-only. Modes 3/7 stay selectable but
-        // paint nothing (transparent); stroke modes get -webkit-text-stroke.
         int mode = _state.RenderMode;
         bool invisible = mode is 3 or 7;
         bool doFill = mode is 0 or 2 or 4 or 6;
         bool doStroke = mode is 1 or 2 or 5 or 6;
 
+        // A glyph-mapped run paints exact glyphs via PUA codepoints (glyph layer,
+        // not selectable) and carries the real Unicode on a transparent selection
+        // layer. Otherwise a single selectable span suffices.
+        if (renderText == realText)
+        {
+            AppendTextSpan(realText, fontHeight, targetWidth, transform, invisible, doFill, doStroke,
+                embedded: true, glyphLayer: false, selectable: true);
+        }
+        else
+        {
+            AppendTextSpan(renderText, fontHeight, targetWidth, transform, invisible, doFill, doStroke,
+                embedded: true, glyphLayer: true, selectable: false);
+            AppendTextSpan(realText, fontHeight, targetWidth, transform, invisible: true, doFill: false, doStroke: false,
+                embedded: false, glyphLayer: false, selectable: true);
+        }
+    }
+
+    private void AppendTextSpan(string text, double fontHeight, double targetWidth, string transform,
+        bool invisible, bool doFill, bool doStroke, bool embedded, bool glyphLayer, bool selectable)
+    {
         _html.Append("<span");
-        if (targetWidth > 0.01)
+        if (glyphLayer)
+        {
+            _html.Append(" data-bp-glyph"); // painted glyphs; excluded from search
+        }
+        // The painted glyph layer uses the embedded font's real advance metrics, so
+        // it must NOT be width-corrected (that would re-stretch correct glyphs). Only
+        // the selection layer and substitute-font runs get scaleX correction.
+        if (!glyphLayer && targetWidth > 0.01)
         {
             _html.Append(string.Create(CultureInfo.InvariantCulture, $" data-w=\"{targetWidth:0.###}\""));
         }
         _html.Append(" style=\"position:absolute;left:0;top:0;white-space:pre;line-height:1");
         _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
+        // Character/word spacing (Tc/Tw) are real inter-glyph gaps, not a stretch:
+        // emit them as letter-/word-spacing so the run's natural width matches its
+        // PDF advance (keeping the width-correction scaleX at ~1, no glyph spread).
+        if (_state.FontSize != 0)
+        {
+            if (_state.CharSpacing != 0)
+            {
+                double ls = _state.CharSpacing * fontHeight / _state.FontSize;
+                _html.Append(string.Create(CultureInfo.InvariantCulture, $";letter-spacing:{ls:0.###}px"));
+            }
+            if (_state.WordSpacing != 0)
+            {
+                double ws = _state.WordSpacing * fontHeight / _state.FontSize;
+                _html.Append(string.Create(CultureInfo.InvariantCulture, $";word-spacing:{ws:0.###}px"));
+            }
+        }
         _html.Append(";color:").Append(invisible || !doFill ? "transparent" : _state.FillColor);
         if (!invisible && doStroke)
         {
@@ -1298,14 +1354,20 @@ public sealed class HtmlRenderer
             _html.Append(string.Create(CultureInfo.InvariantCulture,
                 $";-webkit-text-stroke:{sw:0.###}px ")).Append(_state.StrokeColor);
         }
-        AppendFontStyle(_html, _state.Font!);
-        // scaleX(var(--bp-sx,1)) is applied in local space *before* the matrix, so
-        // the viewer can correct the run's horizontal extent to its PDF advance.
-        // Defaults to 1 (no correction) until the JS width pass runs.
-        _html.Append(string.Create(CultureInfo.InvariantCulture,
-            $";transform:matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##}) scaleX(var(--bp-sx,1));transform-origin:0 0"));
-        // A watermark drawn with /ca must render at that opacity, like fills/images.
-        if (!invisible && _state.FillAlpha < 1)
+        if (!selectable)
+        {
+            _html.Append(";user-select:none;-webkit-user-select:none;pointer-events:none");
+        }
+        if (embedded)
+        {
+            AppendFontStyle(_html, _state.Font!);
+        }
+        else
+        {
+            _html.Append(";font-family:").Append(_state.Font!.GenericFamily);
+        }
+        _html.Append(";transform:").Append(transform).Append(";transform-origin:0 0");
+        if (!invisible && doFill && _state.FillAlpha < 1)
         {
             _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
         }

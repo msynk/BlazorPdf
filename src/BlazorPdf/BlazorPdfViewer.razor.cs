@@ -335,6 +335,10 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     }
 
     /// <summary>Renders a single page to its HTML fragment.</summary>
+    /// <summary>The document-wide embedded-font <c>@font-face</c> stylesheet,
+    /// rendered in a persistent element so it survives page eviction.</summary>
+    private MarkupString FontFaceStyleMarkup => new(_fontStore?.FontFaceStyle ?? string.Empty);
+
     private MarkupString RenderPageContent(int index)
     {
         var page = _document!.Pages[index];
