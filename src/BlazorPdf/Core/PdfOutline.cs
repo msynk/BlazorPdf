@@ -149,10 +149,16 @@ internal sealed class OutlineBuilder
         {
             return idx + 1;
         }
-        // Some destinations encode a 0-based page index directly.
+        // Some destinations encode a 0-based page index directly. Clamp it to the
+        // valid range so a corrupt/out-of-range index can't point past the document.
         if (target is double d)
         {
-            return (int)d + 1;
+            int count = _pageIndex.Count;
+            if (count <= 0)
+            {
+                return (int)d + 1;
+            }
+            return Math.Clamp((int)d, 0, count - 1) + 1;
         }
         return null;
     }

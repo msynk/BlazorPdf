@@ -30,6 +30,12 @@ public sealed class PdfDocument
     public bool IsEncrypted => _xref.Trailer?.Has("Encrypt") == true;
 
     /// <summary>
+    /// The user access permissions (<c>/P</c>) of an encrypted document. Every
+    /// permission is granted for an unencrypted document.
+    /// </summary>
+    public PdfPermissions Permissions => new(_xref.Permissions ?? -1, IsEncrypted && _xref.Permissions.HasValue);
+
+    /// <summary>
     /// Non-fatal diagnostics from parsing (e.g. the file was damaged and its
     /// cross-reference table had to be rebuilt by scanning). Empty for clean files.
     /// </summary>
@@ -122,6 +128,14 @@ public sealed class PdfDocument
 
         document.Catalog = xref.Root
             ?? throw new PdfFormatException("Document catalog (/Root) not found.");
+
+        // A catalog /Version overrides the header version when it is later
+        // (PDF 32000-1 §7.5.2); an incremental update can raise the version here.
+        if (document.Catalog.Get("Version") is Name catalogVersion
+            && string.CompareOrdinal(catalogVersion.Value, document.Version) > 0)
+        {
+            document.Version = catalogVersion.Value;
+        }
 
         return document;
     }

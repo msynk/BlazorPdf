@@ -75,6 +75,10 @@ public abstract class BaseStream
     public int GetInt32()
     {
         int b0 = GetByte(), b1 = GetByte(), b2 = GetByte(), b3 = GetByte();
+        if (b0 == -1 || b1 == -1 || b2 == -1 || b3 == -1)
+        {
+            return -1;
+        }
         return (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
     }
 

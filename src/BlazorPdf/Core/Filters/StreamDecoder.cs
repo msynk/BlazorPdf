@@ -12,21 +12,29 @@ namespace BlazorPdf.Core.Filters;
 /// </summary>
 public static class StreamDecoder
 {
-    /// <summary>Returns the fully decoded bytes for <paramref name="stream"/>.</summary>
-    public static byte[] Decode(PdfStream stream)
+    /// <summary>
+    /// Returns the fully decoded bytes for <paramref name="stream"/>. The
+    /// <c>/F</c> and <c>/DP</c> abbreviations for <c>/Filter</c>/<c>/DecodeParms</c>
+    /// are only valid on inline images; for a regular stream <c>/F</c> is a file
+    /// specification, not a filter, so it is honoured only when
+    /// <paramref name="inline"/> is <c>true</c> (1.7).
+    /// </summary>
+    public static byte[] Decode(PdfStream stream, bool inline = false)
     {
         Dict dict = stream.Dict ?? throw new PdfFormatException("Stream has no dictionary.");
 
         stream.Reset();
         byte[] data = stream.GetBytes();
 
-        var filters = ResolveNames(dict.Get("Filter", "F"), dict.XRef);
+        object? filterObj = inline ? dict.Get("Filter", "F") : dict.Get("Filter");
+        var filters = ResolveNames(filterObj, dict.XRef);
         if (filters.Count == 0)
         {
             return data;
         }
 
-        var parmsList = ResolveParms(dict.Get("DecodeParms", "DP"), filters.Count, dict.XRef);
+        object? parmsObj = inline ? dict.Get("DecodeParms", "DP") : dict.Get("DecodeParms");
+        var parmsList = ResolveParms(parmsObj, filters.Count, dict.XRef);
         for (int i = 0; i < filters.Count; i++)
         {
             data = ApplyFilter(filters[i], data, parmsList[i]);
@@ -53,6 +61,11 @@ public static class StreamDecoder
             case "RunLengthDecode":
             case "RL":
                 return RunLengthDecode(data);
+            // The Crypt filter is not a data transform: decryption (or the decision
+            // to skip it for /Name /Identity) happens in the xref layer, so by the
+            // time the bytes reach here they are already plaintext. (1.7)
+            case "Crypt":
+                return data;
             // Image compression filters are decoded later by the image pipeline.
             case "DCTDecode":
             case "DCT":

@@ -11,7 +11,7 @@ namespace BlazorPdf.Core.Render;
 /// </summary>
 internal static class PdfImage
 {
-    public static string? BuildDataUri(PdfStream stream, IXRef xref, Dict? resources, (byte R, byte G, byte B) fillColor)
+    public static string? BuildDataUri(PdfStream stream, IXRef xref, Dict? resources, (byte R, byte G, byte B) fillColor, bool inline = false)
     {
         Dict dict = stream.Dict!;
         int width = GetInt(dict, "Width", "W");
@@ -38,7 +38,7 @@ internal static class PdfImage
         byte[] data;
         try
         {
-            data = StreamDecoder.Decode(stream);
+            data = StreamDecoder.Decode(stream, inline);
         }
         catch
         {
@@ -257,6 +257,24 @@ internal static class PdfImage
         // Honor the mask's own /Decode [1 0] (inverted alpha).
         bool invert = ReadDecodeArray(smask.Dict.Get("Decode", "D"), xref) is { Length: >= 2 } md && md[0] > md[1];
 
+        // /Matte: the base image's colour has been pre-blended against this matte
+        // colour, so it must be un-premultiplied as alpha is applied (PDF 32000-1
+        // §11.6.5.3). The matte is in the base image's colour space.
+        (byte R, byte G, byte B)? matte = null;
+        if (smask.Dict.Get("Matte") is List<object?> matteArr && matteArr.Count > 0)
+        {
+            var cs = ColorSpace.Create(dict.Get("ColorSpace", "CS"), xref, resources);
+            var comps = new double[matteArr.Count];
+            for (int i = 0; i < matteArr.Count; i++)
+            {
+                comps[i] = xref.FetchIfRef(matteArr[i]) is double d ? d : 0;
+            }
+            if (comps.Length == cs.Components)
+            {
+                matte = cs.GetRgb(comps);
+            }
+        }
+
         double maxVal = (1 << mbpc) - 1;
         int rowBytes = (mw * mbpc + 7) / 8;
         for (int y = 0; y < height; y++)
@@ -272,10 +290,21 @@ internal static class PdfImage
                 {
                     alpha = 1 - alpha;
                 }
-                rgba[(y * width + x) * 4 + 3] = (byte)Math.Clamp((int)Math.Round(alpha * 255), 0, 255);
+                int p = (y * width + x) * 4;
+                if (matte is { } m && alpha > 0)
+                {
+                    rgba[p] = Unmatte(rgba[p], m.R, alpha);
+                    rgba[p + 1] = Unmatte(rgba[p + 1], m.G, alpha);
+                    rgba[p + 2] = Unmatte(rgba[p + 2], m.B, alpha);
+                }
+                rgba[p + 3] = (byte)Math.Clamp((int)Math.Round(alpha * 255), 0, 255);
             }
         }
     }
+
+    // Recovers a colour component pre-blended against a matte: c = m + (c' - m)/a.
+    private static byte Unmatte(byte premultiplied, byte matte, double alpha)
+        => (byte)Math.Clamp((int)Math.Round(matte + (premultiplied - matte) / alpha), 0, 255);
 
     /// <summary>Applies an explicit stencil-mask stream (1-bpc): masked samples
     /// become fully transparent (PDF 32000-1 §8.9.6.3).</summary>

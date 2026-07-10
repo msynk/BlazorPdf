@@ -43,15 +43,15 @@ public abstract class PdfFunction
         int type = ToInt(dict.Get("FunctionType"), -1);
         return type switch
         {
-            0 when obj is PdfStream stream => SampledFunction.Build(stream),
-            2 => ExponentialFunction.Build(dict),
+            0 when obj is PdfStream stream => SampledFunction.Build(stream, xref),
+            2 => ExponentialFunction.Build(dict, xref),
             3 => StitchingFunction.Build(dict, xref),
             4 when obj is PdfStream calc => PostScriptFunction.Build(calc),
             _ => null,
         };
     }
 
-    protected static double[] ReadNumbers(object? value)
+    protected static double[] ReadNumbers(object? value, IXRef? xref = null)
     {
         if (value is not List<object?> arr)
         {
@@ -60,7 +60,8 @@ public abstract class PdfFunction
         var result = new double[arr.Count];
         for (int i = 0; i < arr.Count; i++)
         {
-            result[i] = arr[i] is double d ? d : 0;
+            // Elements (/Domain, /C0, /C1, /Range, /Encode, …) may be indirect refs (1.26).
+            result[i] = Primitives.ResolveNumber(xref, arr[i]);
         }
         return result;
     }
@@ -102,14 +103,14 @@ internal sealed class ExponentialFunction : PdfFunction
         _domain = domain;
     }
 
-    public static ExponentialFunction Build(Dict dict)
+    public static ExponentialFunction Build(Dict dict, IXRef? xref = null)
     {
-        double[] c0 = ReadNumbers(dict.Get("C0"));
-        double[] c1 = ReadNumbers(dict.Get("C1"));
+        double[] c0 = ReadNumbers(dict.Get("C0"), xref);
+        double[] c1 = ReadNumbers(dict.Get("C1"), xref);
         if (c0.Length == 0) c0 = [0];
         if (c1.Length == 0) c1 = [1];
         double n = dict.Get("N") is double d ? d : 1;
-        double[] domain = ReadNumbers(dict.Get("Domain"));
+        double[] domain = ReadNumbers(dict.Get("Domain"), xref);
         if (domain.Length < 2) domain = [0, 1];
         return new ExponentialFunction(c0, c1, n, domain);
     }
@@ -159,9 +160,9 @@ internal sealed class StitchingFunction : PdfFunction
             functions.Add(fn ?? new ConstantFunction([0]));
         }
 
-        double[] bounds = ReadNumbers(dict.Get("Bounds"));
-        double[] encode = ReadNumbers(dict.Get("Encode"));
-        double[] domain = ReadNumbers(dict.Get("Domain"));
+        double[] bounds = ReadNumbers(dict.Get("Bounds"), xref);
+        double[] encode = ReadNumbers(dict.Get("Encode"), xref);
+        double[] domain = ReadNumbers(dict.Get("Domain"), xref);
         if (domain.Length < 2) domain = [0, 1];
         return new StitchingFunction(functions.ToArray(), bounds, encode, domain);
     }
@@ -218,12 +219,12 @@ internal sealed class SampledFunction : PdfFunction
         _range = range;
     }
 
-    public static SampledFunction? Build(PdfStream stream)
+    public static SampledFunction? Build(PdfStream stream, IXRef? xref = null)
     {
         Dict dict = stream.Dict!;
-        double[] domain = ReadNumbers(dict.Get("Domain"));
-        double[] range = ReadNumbers(dict.Get("Range"));
-        double[] sizeArr = ReadNumbers(dict.Get("Size"));
+        double[] domain = ReadNumbers(dict.Get("Domain"), xref);
+        double[] range = ReadNumbers(dict.Get("Range"), xref);
+        double[] sizeArr = ReadNumbers(dict.Get("Size"), xref);
         int bps = ToInt(dict.Get("BitsPerSample"), 8);
         if (domain.Length < 2 || range.Length < 2 || sizeArr.Length < 1)
         {
@@ -241,7 +242,7 @@ internal sealed class SampledFunction : PdfFunction
         // Encode defaults to [0 size0-1 0 size1-1 ...]; missing entries in a
         // partial Encode array fall back to those per-axis defaults rather than
         // discarding the values that were supplied.
-        double[] providedEncode = ReadNumbers(dict.Get("Encode"));
+        double[] providedEncode = ReadNumbers(dict.Get("Encode"), xref);
         var encode = new double[inCount * 2];
         for (int i = 0; i < inCount; i++)
         {
@@ -250,7 +251,7 @@ internal sealed class SampledFunction : PdfFunction
         }
 
         // Decode defaults to Range; a partial Decode falls back to Range per entry.
-        double[] providedDecode = ReadNumbers(dict.Get("Decode"));
+        double[] providedDecode = ReadNumbers(dict.Get("Decode"), xref);
         var decode = new double[range.Length];
         for (int i = 0; i < range.Length; i++)
         {

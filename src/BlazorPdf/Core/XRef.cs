@@ -25,13 +25,16 @@ public sealed class XRef : IXRef
 
     private readonly byte[] _buffer;
     private readonly Dictionary<int, Entry> _entries = new();
-    private readonly Dictionary<int, object?> _cache = new();
+    // Keyed by (object number, generation): a generation-0 object must not mask a
+    // fetch for the same number at a different generation (2.3).
+    private readonly Dictionary<(int Num, int Gen), object?> _cache = new();
     private readonly Dictionary<int, List<object?>> _objStmCache = new();
     private readonly HashSet<int> _pending = new();
 
     private StandardSecurityHandler? _security;
     private int _encryptRefNum = -1;
     private bool _scanned; // true once RebuildByScanning has run (guards re-entry)
+    private readonly int _startOffset; // byte position of the %PDF header (prepended junk)
 
     /// <summary>The combined trailer dictionary (newest section wins).</summary>
     public Dict? Trailer { get; private set; }
@@ -39,13 +42,48 @@ public sealed class XRef : IXRef
     /// <summary>The password to try for an encrypted document (user or owner).</summary>
     public string? Password { get; set; }
 
+    /// <summary>The raw user-permission bits (<c>/P</c>) once a handler is active, else <c>null</c>.</summary>
+    public int? Permissions => _security?.Permissions;
+
     /// <summary>
     /// Non-fatal problems encountered while parsing (bad xref sections, recovery
     /// by full-scan, etc.). Populated when the file was damaged but still opened.
     /// </summary>
     public List<string> Warnings { get; } = new();
 
-    public XRef(byte[] buffer) => _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+    public XRef(byte[] buffer)
+    {
+        _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+        _startOffset = FindHeaderOffset(_buffer);
+    }
+
+    /// <summary>
+    /// Position of the <c>%PDF-</c> header. When it is not at byte 0 (junk was
+    /// prepended) every stored xref/object offset is relative to it, so this is
+    /// added to each offset before seeking (2.5, matching pdf.js's stream reset).
+    /// </summary>
+    private static int FindHeaderOffset(byte[] buffer)
+    {
+        var marker = "%PDF-"u8;
+        int limit = Math.Min(buffer.Length - marker.Length, 1024);
+        for (int i = 0; i <= limit; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < marker.Length; j++)
+            {
+                if (buffer[i + j] != marker[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+            {
+                return i;
+            }
+        }
+        return 0;
+    }
 
     /// <summary>The document catalog (<c>/Root</c>), resolved through the trailer.</summary>
     public Dict? Root => Trailer?.Get("Root") as Dict;
@@ -98,7 +136,7 @@ public sealed class XRef : IXRef
         while (queue.Count > 0)
         {
             int offset = queue.Dequeue();
-            if (offset < 0 || offset >= _buffer.Length || !visited.Add(offset))
+            if (offset < 0 || offset + _startOffset >= _buffer.Length || !visited.Add(offset))
             {
                 continue;
             }
@@ -182,7 +220,9 @@ public sealed class XRef : IXRef
 
     private Dict? ReadSection(int offset)
     {
-        var probe = new Lexer(new PdfStream(_buffer, offset));
+        // Stored offsets are relative to the %PDF header; probe.Pos is already an
+        // absolute buffer index once the substream starts there.
+        var probe = new Lexer(new PdfStream(_buffer, offset + _startOffset));
         object first = probe.GetObj();
 
         if (first is Cmd { Value: "xref" })
@@ -238,7 +278,10 @@ public sealed class XRef : IXRef
                     _entries[num] = new Entry
                     {
                         Type = free ? EntryType.Free : EntryType.Uncompressed,
-                        Field2 = (int)off,
+                        // Normalize a real object offset to an absolute buffer index
+                        // (offsets are relative to the %PDF header); a free entry's
+                        // field is a next-free object number, not an offset (2.5).
+                        Field2 = free ? (int)off : (int)off + _startOffset,
                         Field3 = (int)gen,
                     };
                 }
@@ -253,7 +296,7 @@ public sealed class XRef : IXRef
 
     private Dict ReadXRefStream(int offset)
     {
-        var parser = new Parser(new Lexer(new PdfStream(_buffer, offset)), this);
+        var parser = new Parser(new Lexer(new PdfStream(_buffer, offset + _startOffset)), this);
         if (parser.GetObj() is not PdfStream stream || stream.Dict is null)
         {
             throw new PdfFormatException("Expected an xref stream object.");
@@ -321,7 +364,9 @@ public sealed class XRef : IXRef
                 _entries[num] = f1 switch
                 {
                     0 => new Entry { Type = EntryType.Free, Field2 = (int)f2, Field3 = (int)f3 },
-                    1 => new Entry { Type = EntryType.Uncompressed, Field2 = (int)f2, Field3 = (int)f3 },
+                    // Type-1 Field2 is an object offset -> normalize to absolute (2.5);
+                    // type-2 Field2 is the containing ObjStm object number, not an offset.
+                    1 => new Entry { Type = EntryType.Uncompressed, Field2 = (int)f2 + _startOffset, Field3 = (int)f3 },
                     2 => new Entry { Type = EntryType.Compressed, Field2 = (int)f2, Field3 = (int)f3 },
                     _ => new Entry { Type = EntryType.Free },
                 };
@@ -354,7 +399,7 @@ public sealed class XRef : IXRef
     /// <inheritdoc/>
     public object? Fetch(Ref reference, bool suppressEncryption = false)
     {
-        if (_cache.TryGetValue(reference.Num, out var cached))
+        if (_cache.TryGetValue((reference.Num, reference.Gen), out var cached))
         {
             return cached;
         }
@@ -372,7 +417,7 @@ public sealed class XRef : IXRef
             object? result = entry.Type == EntryType.Compressed
                 ? FetchCompressed(entry)
                 : FetchUncompressed(reference, entry);
-            _cache[reference.Num] = result;
+            _cache[(reference.Num, reference.Gen)] = result;
             return result;
         }
         finally
@@ -388,11 +433,11 @@ public sealed class XRef : IXRef
             return null;
         }
 
-        // Validate the "num gen obj" header at the offset. A mismatch means the
-        // xref offset is wrong (off-by-N, damaged table); rebuild by scanning
-        // once and retry from the corrected offset rather than silently returning
-        // the wrong object.
-        if (!HeaderMatches(entry.Field2, reference.Num) && !_scanned)
+        // Validate the "num gen obj" header at the offset (both number and
+        // generation). A mismatch means the xref offset is wrong (off-by-N,
+        // damaged table); rebuild by scanning once and retry from the corrected
+        // offset rather than silently returning the wrong object.
+        if (!HeaderMatches(entry.Field2, reference.Num, reference.Gen) && !_scanned)
         {
             _scanned = true;
             RebuildByScanning();
@@ -438,6 +483,12 @@ public sealed class XRef : IXRef
                 {
                     return stream;
                 }
+                // A /Filter /Crypt with /Name /Identity (or no name, which defaults
+                // to Identity) marks a stream the default StmF must not decrypt (1.7).
+                if (HasIdentityCryptFilter(stream.Dict))
+                {
+                    return stream;
+                }
                 stream.Reset();
                 byte[] raw = stream.GetBytes();
                 byte[] decrypted = _security!.DecryptStream(raw, num, gen);
@@ -448,10 +499,63 @@ public sealed class XRef : IXRef
         }
     }
 
+    /// <summary>
+    /// True when the stream's <c>/Filter</c> chain contains a <c>Crypt</c> filter
+    /// whose <c>/DecodeParms /Name</c> is <c>Identity</c> (or absent, which the
+    /// spec defaults to Identity) - meaning the default StmF must not decrypt it.
+    /// </summary>
+    private bool HasIdentityCryptFilter(Dict dict)
+    {
+        object? filter = FetchIfRef(dict.Get("Filter"));
+        var filterNames = new List<string>();
+        if (filter is Name single)
+        {
+            filterNames.Add(single.Value);
+        }
+        else if (filter is List<object?> arr)
+        {
+            foreach (var f in arr)
+            {
+                if (FetchIfRef(f) is Name fn)
+                {
+                    filterNames.Add(fn.Value);
+                }
+            }
+        }
+
+        int cryptIndex = filterNames.IndexOf("Crypt");
+        if (cryptIndex < 0)
+        {
+            return false;
+        }
+
+        // Find the DecodeParms entry aligned with the Crypt filter.
+        object? parms = FetchIfRef(dict.Get("DecodeParms"));
+        Dict? cryptParms = parms switch
+        {
+            Dict d => d,
+            List<object?> pl when cryptIndex < pl.Count => FetchIfRef(pl[cryptIndex]) as Dict,
+            _ => null,
+        };
+
+        // Absent /Name defaults to Identity per PDF 32000-1 §7.4.10.
+        string cryptName = (cryptParms?.Get("Name") as Name)?.Value ?? "Identity";
+        return cryptName == "Identity";
+    }
+
     private void DecryptDictStrings(Dict dict, int num, int gen)
     {
+        // A signature dictionary's /Contents holds the raw signature bytes, which
+        // are excluded from the document's string encryption (PDF 32000-1 §7.6.2);
+        // decrypting them would corrupt the signature. Such dicts carry /ByteRange.
+        bool isSignature = dict.Has("ByteRange");
+
         foreach (var key in dict.Keys.ToList())
         {
+            if (isSignature && key == "Contents")
+            {
+                continue;
+            }
             object? raw = dict.GetRaw(key);
             // Indirect references are not decrypted; their targets are when fetched.
             if (raw is Ref)
@@ -520,12 +624,17 @@ public sealed class XRef : IXRef
 
     // ----- Recovery (pdf.js XRef.indexObjects equivalent) -----
 
-    private bool HeaderMatches(int offset, int num)
+    private bool HeaderMatches(int offset, int num, int gen)
     {
         try
         {
             var lexer = new Lexer(new PdfStream(_buffer, offset));
-            return lexer.GetObj() is double d && (int)d == num;
+            if (lexer.GetObj() is not double dn || (int)dn != num)
+            {
+                return false;
+            }
+            // The generation should match too; tolerate a header that omits it.
+            return lexer.GetObj() is not double dg || (int)dg == gen;
         }
         catch
         {

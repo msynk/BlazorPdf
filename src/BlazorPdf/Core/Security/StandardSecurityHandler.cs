@@ -32,12 +32,16 @@ public sealed class StandardSecurityHandler
     private readonly CipherKind _streamCipher;
     private readonly CipherKind _stringCipher;
 
-    private StandardSecurityHandler(byte[] fileKey, int revision, CipherKind stream, CipherKind str)
+    /// <summary>The raw user-permission bits from the <c>/P</c> entry (Table 22).</summary>
+    public int Permissions { get; }
+
+    private StandardSecurityHandler(byte[] fileKey, int revision, CipherKind stream, CipherKind str, int permissions)
     {
         _fileKey = fileKey;
         _revision = revision;
         _streamCipher = stream;
         _stringCipher = str;
+        Permissions = permissions;
     }
 
     /// <summary>Builds a handler from the <c>/Encrypt</c> dictionary, or <c>null</c> if unsupported.</summary>
@@ -85,7 +89,7 @@ public sealed class StandardSecurityHandler
                 "Encrypted PDFs are not supported on WebAssembly (MD5/AES are unavailable in the browser sandbox).", ex);
         }
 
-        return new StandardSecurityHandler(fileKey, r, stream, str);
+        return new StandardSecurityHandler(fileKey, r, stream, str, p);
     }
 
     // ----- Legacy (R2-4) key derivation with password validation -----

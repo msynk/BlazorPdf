@@ -322,3 +322,14 @@
 .blazorpdf-thumb-svg ::deep .bp-html-page {
     line-height: normal;
 }
+
+/* Glyph-mapped runs carry a transparent selection overlay (real Unicode, drawn
+   in a substitute font) on top of the painted glyph layer. Keep that overlay's
+   text transparent while selected so only the highlight box shows and the real
+   painted glyphs stay visible through it — without this the browser paints the
+   overlay's substitute glyphs opaque, stacking a wrong-font copy over the text. */
+.blazorpdf-page ::deep .bp-html-page span[data-bp-sel]::selection,
+.blazorpdf-thumb-svg ::deep .bp-html-page span[data-bp-sel]::selection {
+    color: transparent;
+    background: rgba(35, 130, 255, 0.35);
+}

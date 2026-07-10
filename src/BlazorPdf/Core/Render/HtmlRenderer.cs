@@ -70,6 +70,11 @@ public sealed class HtmlRenderer
     private HashSet<string>? _ocgOff;
     private int _formDepth;
 
+    // Set by a Type3 glyph's `d1` operator: the glyph is a shape only, so its
+    // colour comes from the text-showing context and colour operators inside the
+    // glyph description are ignored (PDF 32000-1 §9.6.5.3). `d0` leaves it clear.
+    private bool _type3ColorLocked;
+
     private readonly int _rotationOffset;
 
     public HtmlRenderer(PdfPage page, IXRef xref, int rotationOffset = 0)
@@ -189,8 +194,17 @@ public sealed class HtmlRenderer
         };
     }
 
+    private static bool IsColorOperator(string op) => op is
+        "g" or "G" or "rg" or "RG" or "k" or "K" or
+        "cs" or "CS" or "sc" or "scn" or "SC" or "SCN";
+
     private void Execute(Operation op)
     {
+        // Inside a Type3 `d1` glyph, colour-setting operators have no effect.
+        if (_type3ColorLocked && IsColorOperator(op.Operator))
+        {
+            return;
+        }
         switch (op.Operator)
         {
             // Graphics state.
@@ -268,6 +282,11 @@ public sealed class HtmlRenderer
             case "sh": PaintShading(op); break;
             case "Do": DoXObject(op); break;
             case "INLINE_IMAGE": DrawInlineImage(op); break;
+
+            // Type3 glyph metrics. `d0` sets the advance only; `d1` also declares a
+            // colour-independent glyph, so later colour operators are suppressed.
+            case "d0": break;
+            case "d1": _type3ColorLocked = true; break;
 
             // Marked content / optional content groups.
             case "BDC": BeginMarkedContent(op); break;
@@ -588,7 +607,27 @@ public sealed class HtmlRenderer
         {
             _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
         }
+        // A shading /BBox bounds the painted region to a rectangle in shading space
+        // (PDF 32000-1 §8.7.4.3); clip the fill to it when present.
+        if (shading.Get("BBox") is List<object?> bbox && bbox.Count >= 4)
+        {
+            _html.Append(';').Append(BBoxClipPath(bbox));
+        }
         _html.Append("\"></div>");
+    }
+
+    /// <summary>
+    /// A CSS <c>clip-path</c> for a shading/form <c>/BBox</c> rectangle, its four
+    /// corners transformed by the current CTM into device space.
+    /// </summary>
+    private string BBoxClipPath(List<object?> bbox)
+    {
+        var (c0x, c0y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[1]));
+        var (c1x, c1y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[1]));
+        var (c2x, c2y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[3]));
+        var (c3x, c3y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[3]));
+        return string.Create(CultureInfo.InvariantCulture,
+            $"clip-path:path('M{c0x:0.##} {c0y:0.##} L{c1x:0.##} {c1y:0.##} L{c2x:0.##} {c2y:0.##} L{c3x:0.##} {c3y:0.##} Z')");
     }
 
     // ----- XObjects -----
@@ -624,7 +663,8 @@ public sealed class HtmlRenderer
         {
             return;
         }
-        EmitImage(uri, PixelSize(stream.Dict!, "Width", "W"), PixelSize(stream.Dict!, "Height", "H"));
+        EmitImage(uri, PixelSize(stream.Dict!, "Width", "W"), PixelSize(stream.Dict!, "Height", "H"),
+            Interpolate(stream.Dict!));
     }
 
     private void DrawInlineImage(Operation op)
@@ -635,14 +675,16 @@ public sealed class HtmlRenderer
         }
         var stream = new PdfStream(data, 0, data.Length, dict);
         var fill = ParseRgb(_state.FillColor);
-        string? uri = PdfImage.BuildDataUri(stream, _xref, _resources, fill);
+        string? uri = PdfImage.BuildDataUri(stream, _xref, _resources, fill, inline: true);
         if (uri is not null)
         {
-            EmitImage(uri, PixelSize(dict, "Width", "W"), PixelSize(dict, "Height", "H"));
+            EmitImage(uri, PixelSize(dict, "Width", "W"), PixelSize(dict, "Height", "H"), Interpolate(dict));
         }
     }
 
-    private void EmitImage(string uri, int pixelW, int pixelH)
+    private static bool Interpolate(Dict dict) => dict.Get("Interpolate", "I") is bool b && b;
+
+    private void EmitImage(string uri, int pixelW, int pixelH, bool interpolate)
     {
         if (pixelW <= 0)
         {
@@ -671,7 +713,22 @@ public sealed class HtmlRenderer
         {
             _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
         }
+        // When the image declares no interpolation (the default) and it is being
+        // scaled up, render its samples crisply instead of smoothing them (1.15).
+        if (!interpolate && IsUpscaled(pixelW, pixelH))
+        {
+            _html.Append(";image-rendering:pixelated");
+        }
         _html.Append("\"/>");
+    }
+
+    // True when the CTM stretches the unit-square image beyond its native pixels
+    // on either axis (each source pixel then covers more than one device pixel).
+    private bool IsUpscaled(int pixelW, int pixelH)
+    {
+        double displayW = Math.Sqrt(_state.Ctm.A * _state.Ctm.A + _state.Ctm.B * _state.Ctm.B);
+        double displayH = Math.Sqrt(_state.Ctm.C * _state.Ctm.C + _state.Ctm.D * _state.Ctm.D);
+        return displayW > pixelW || displayH > pixelH;
     }
 
     private static int PixelSize(Dict dict, string key1, string key2)
@@ -817,12 +874,9 @@ public sealed class HtmlRenderer
         bool bboxClip = false;
         if (stream.Dict.Get("BBox") is List<object?> bbox && bbox.Count >= 4)
         {
-            var (c0x, c0y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[1]));
-            var (c1x, c1y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[1]));
-            var (c2x, c2y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[3]));
-            var (c3x, c3y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[3]));
-            _html.Append(string.Create(CultureInfo.InvariantCulture,
-                $"<div style=\"position:absolute;inset:0;clip-path:path('M{c0x:0.##} {c0y:0.##} L{c1x:0.##} {c1y:0.##} L{c2x:0.##} {c2y:0.##} L{c3x:0.##} {c3y:0.##} Z')\">"));
+            _html.Append("<div style=\"position:absolute;inset:0;")
+                .Append(BBoxClipPath(bbox))
+                .Append("\">");
             bboxClip = true;
         }
 
@@ -994,7 +1048,18 @@ public sealed class HtmlRenderer
             }
         }
 
-        double[] r = ToRect(rectArr);
+        // A link may carry /QuadPoints delimiting the individual clickable quads
+        // (e.g. a link that wraps across several lines); emit one hotspot per quad,
+        // falling back to the whole /Rect when they are absent (4.8).
+        var regions = QuadPointRegions(annot) ?? new List<double[]> { ToRect(rectArr) };
+        foreach (double[] r in regions)
+        {
+            EmitLinkHotspot(r, uri, destPage);
+        }
+    }
+
+    private void EmitLinkHotspot(double[] r, string? uri, int? destPage)
+    {
         Matrix transform = Matrix.Concat(_baseMatrix, new Matrix(1, 0, 0, 1, r[0], r[1]));
         string style = string.Create(CultureInfo.InvariantCulture,
             $"position:absolute;left:0;top:0;width:{r[2] - r[0]:0.##}px;height:{r[3] - r[1]:0.##}px;transform:{transform.ToSvg()};transform-origin:0 0");
@@ -1011,6 +1076,37 @@ public sealed class HtmlRenderer
                 $"<div data-bp-page=\"{page}\" style=\"{style};cursor:pointer\"></div>"));
         }
         // Otherwise (unknown/unsafe scheme, unresolved dest): drop the hotspot.
+    }
+
+    /// <summary>
+    /// The clickable rectangles from a link's <c>/QuadPoints</c> (8 numbers per
+    /// quad: four corners), or <c>null</c> when the entry is missing or malformed.
+    /// </summary>
+    private List<double[]>? QuadPointRegions(Dict annot)
+    {
+        if (_xref.FetchIfRef(annot.Get("QuadPoints")) is not List<object?> qp || qp.Count < 8)
+        {
+            return null;
+        }
+
+        var regions = new List<double[]>();
+        int quads = qp.Count / 8;
+        for (int i = 0; i < quads; i++)
+        {
+            int b = i * 8;
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            for (int c = 0; c < 4; c++)
+            {
+                double x = Num(_xref.FetchIfRef(qp[b + c * 2]));
+                double y = Num(_xref.FetchIfRef(qp[b + c * 2 + 1]));
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+            }
+            regions.Add([minX, minY, maxX, maxY]);
+        }
+        return regions.Count > 0 ? regions : null;
     }
 
     private static Matrix ComputeAppearanceMatrix(double[] bbox, Matrix formMatrix, double[] rect)
@@ -1235,6 +1331,9 @@ public sealed class HtmlRenderer
         _stack.Push(_state.Clone());
         _groupDepthStack.Push(_openGroups);
         Dict? savedResources = _resources;
+        bool savedColorLocked = _type3ColorLocked;
+        // Each glyph starts unlocked; a `d1` inside it locks colour for that glyph only.
+        _type3ColorLocked = false;
 
         _state.Ctm = glyphToDevice;
         // Glyph procedures may reference their own resources; fall back to the
@@ -1252,6 +1351,7 @@ public sealed class HtmlRenderer
         }
 
         _resources = savedResources;
+        _type3ColorLocked = savedColorLocked;
         if (_stack.Count > 0)
         {
             _state = _stack.Pop();
@@ -1321,6 +1421,14 @@ public sealed class HtmlRenderer
         if (glyphLayer)
         {
             _html.Append(" data-bp-glyph"); // painted glyphs; excluded from search
+        }
+        // The transparent selection overlay for a glyph-mapped run (drawn in a
+        // substitute font over the painted glyphs). Marked so a ::selection rule can
+        // keep its text transparent — otherwise the browser paints the selected
+        // substitute glyphs opaque, stacking a wrong-font copy over the real ones.
+        if (selectable && !embedded)
+        {
+            _html.Append(" data-bp-sel");
         }
         // The painted glyph layer uses the embedded font's real advance metrics, so
         // it must NOT be width-corrected (that would re-stretch correct glyphs). Only

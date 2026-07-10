@@ -549,7 +549,8 @@ public sealed class PdfFont
         {
             foreach (var w in widthArr)
             {
-                widths.Add(w is double d ? d : 0);
+                // /Widths elements may be indirect references (Type3 details, 1.20).
+                widths.Add(Primitives.ResolveNumber(xref, w));
             }
         }
 

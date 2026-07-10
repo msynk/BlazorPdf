@@ -260,12 +260,14 @@ internal sealed class SeparationColorSpace : ColorSpace
     private readonly ColorSpace _alternate;
     private readonly PdfFunction? _tint;
     private readonly int _components;
+    private readonly bool _isNone;
 
-    private SeparationColorSpace(ColorSpace alternate, PdfFunction? tint, int components)
+    private SeparationColorSpace(ColorSpace alternate, PdfFunction? tint, int components, bool isNone)
     {
         _alternate = alternate;
         _tint = tint;
         _components = components;
+        _isNone = isNone;
     }
 
     public override int Components => _components;
@@ -283,17 +285,31 @@ internal sealed class SeparationColorSpace : ColorSpace
         // [/Separation name alt tint]  or  [/DeviceN [names] alt tint]
         bool isDeviceN = (xref.FetchIfRef(arr[0]) as Name)?.Value == "DeviceN";
         int components = 1;
+        // A Separation whose single colorant is /None produces no visible marks
+        // (PDF 32000-1 §8.6.6.4); DeviceN counts as "None" only if every colorant is.
+        bool isNone;
         if (isDeviceN && xref.FetchIfRef(arr.Count > 1 ? arr[1] : null) is List<object?> names)
         {
             components = names.Count;
+            isNone = names.Count > 0 && names.All(n => (xref.FetchIfRef(n) as Name)?.Value == "None");
+        }
+        else
+        {
+            isNone = (xref.FetchIfRef(arr.Count > 1 ? arr[1] : null) as Name)?.Value == "None";
         }
         var alternate = Create(arr.Count > 2 ? arr[2] : null, xref, resources);
         var tint = PdfFunction.Create(arr.Count > 3 ? arr[3] : null, xref);
-        return new SeparationColorSpace(alternate, tint, components);
+        return new SeparationColorSpace(alternate, tint, components, isNone);
     }
 
     public override (byte, byte, byte) GetRgb(double[] comps)
     {
+        // The /None colorant is a no-op: it never paints ink, so on the default
+        // page it maps to white (the closest this HTML renderer can get to "no marks").
+        if (_isNone)
+        {
+            return (255, 255, 255);
+        }
         if (_tint is null)
         {
             byte v = ToByte(1 - (comps.Length > 0 ? comps[0] : 0));

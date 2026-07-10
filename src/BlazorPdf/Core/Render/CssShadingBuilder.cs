@@ -28,12 +28,12 @@ internal static class CssShadingBuilder
         var cs = ColorSpace.Create(shading.Get("ColorSpace"), xref, resources);
         var fn = PdfFunction.Create(shading.Get("Function"), xref);
 
-        double[] domain = ReadNumbers(shading.Get("Domain"));
+        double[] domain = ReadNumbers(shading.Get("Domain"), xref);
         if (domain.Length < 2)
         {
             domain = [0, 1];
         }
-        double[] coords = ReadNumbers(shading.Get("Coords"));
+        double[] coords = ReadNumbers(shading.Get("Coords"), xref);
 
         // /Extend [before after]: whether the shading continues past its ends.
         bool extendBefore = false, extendAfter = false;
@@ -193,7 +193,7 @@ internal static class CssShadingBuilder
         return cs.GetRgb(comps);
     }
 
-    private static double[] ReadNumbers(object? value)
+    private static double[] ReadNumbers(object? value, IXRef? xref = null)
     {
         if (value is not List<object?> arr)
         {
@@ -202,7 +202,8 @@ internal static class CssShadingBuilder
         var result = new double[arr.Count];
         for (int i = 0; i < arr.Count; i++)
         {
-            result[i] = arr[i] is double d ? d : 0;
+            // Elements may be indirect references (1.26).
+            result[i] = Primitives.ResolveNumber(xref, arr[i]);
         }
         return result;
     }
