@@ -437,13 +437,14 @@ export function searchAll(container, query) {
     const ranges = [];
 
     container.querySelectorAll("[data-page]").forEach((page) => {
-        // Skip the painted-glyph layer ([data-bp-glyph]) — it holds Private-Use
-        // codepoints, not real text; search the selectable/real-Unicode spans.
+        // Search only the coalesced selection layer ([data-bp-sel]) — it holds the
+        // real Unicode in reading order. The painted layer beneath is presentational
+        // (real glyphs or Private-Use codepoints) and would otherwise double-count.
         const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
             acceptNode(n) {
-                return n.parentElement && n.parentElement.hasAttribute("data-bp-glyph")
-                    ? NodeFilter.FILTER_REJECT
-                    : NodeFilter.FILTER_ACCEPT;
+                return n.parentElement && n.parentElement.hasAttribute("data-bp-sel")
+                    ? NodeFilter.FILTER_ACCEPT
+                    : NodeFilter.FILTER_REJECT;
             },
         });
         const nodes = [];

@@ -54,6 +54,17 @@ public sealed class HtmlRenderer
     private Matrix _textMatrix = Matrix.Identity;
     private Matrix _textLineMatrix = Matrix.Identity;
 
+    // Coalesced selection/text layer (the pdf.js model): text is accumulated here
+    // separately from the painted glyph spans and emitted once, on top, at page end
+    // — decoupled from paint order. Adjacent runs on a baseline merge into a single
+    // transparent, selectable span per visual line (with spaces inserted for gaps),
+    // so double-click words, triple-click lines, click-drag and copy behave like
+    // normal text instead of fragmenting per glyph.
+    private readonly StringBuilder _selLayer = new();
+    private readonly StringBuilder _selText = new();
+    private bool _selActive;
+    private double _selLeft, _selTop, _selFontHeight, _selBaseY, _selStartX, _selEndX;
+
     private readonly StringBuilder _fontFaces;         // document-wide accumulator (shared)
     private readonly HashSet<string> _emittedFamilies; // dedup across pages (shared)
     private readonly StringBuilder _pageFaces = new();  // faces first seen on THIS page
@@ -148,6 +159,8 @@ public sealed class HtmlRenderer
             _openGroups--;
         }
 
+        FlushSelectionLine(); // emit the final accumulated line of selectable text
+
         RenderAnnotations();
 
         var sb = new StringBuilder();
@@ -162,6 +175,16 @@ public sealed class HtmlRenderer
             sb.Append("<style>").Append(_pageFaces).Append("</style>");
         }
         sb.Append(_html);
+        // The coalesced selection/text layer sits on top of the painted content so
+        // it captures selection. The container itself is transparent to pointer
+        // events (clicks pass through to link annotations); only its spans opt back
+        // in, so dragging over text selects while empty areas stay clickable.
+        if (_selLayer.Length > 0)
+        {
+            sb.Append("<div class=\"bp-text-layer\" style=\"position:absolute;inset:0;line-height:1;pointer-events:none\">");
+            sb.Append(_selLayer);
+            sb.Append("</div>");
+        }
         sb.Append("</div>");
         return sb.ToString();
     }
@@ -1387,57 +1410,162 @@ public sealed class HtmlRenderer
         double b = trm.B / fontHeight;
         double c = -trm.C / fontHeight;
         double d = -trm.D / fontHeight;
-        double e = trm.C * AscentFactor + trm.E;
-        double f = trm.D * AscentFactor + trm.F;
-        string transform = string.Create(CultureInfo.InvariantCulture,
-            $"matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},{e:0.##},{f:0.##}) scaleX(var(--bp-sx,1))");
+        // The run's top-left origin in device space (its baseline lifted by the
+        // ascent). Emitted as CSS left/top so the span's layout box coincides with
+        // where it paints, instead of every run being anchored at (0,0) and moved
+        // purely by a transform. The browser then hit-tests selection against real
+        // geometry, so click-drag stays coherent (the pdf.js text-layer model).
+        double left = trm.C * AscentFactor + trm.E;
+        double top = trm.D * AscentFactor + trm.F;
+        // Only the linear part (scale/rotation/skew) stays in `transform`; with
+        // transform-origin:0 0 this is exactly equivalent to the old single matrix
+        // that also carried the translation. scaleX(--bp-sx) width-corrects runs.
+        string linear = string.Create(CultureInfo.InvariantCulture,
+            $"matrix({a:0.####},{b:0.####},{c:0.####},{d:0.####},0,0) scaleX(var(--bp-sx,1))");
 
         int mode = _state.RenderMode;
         bool invisible = mode is 3 or 7;
         bool doFill = mode is 0 or 2 or 4 or 6;
         bool doStroke = mode is 1 or 2 or 5 or 6;
 
-        // A glyph-mapped run paints exact glyphs via PUA codepoints (glyph layer,
-        // not selectable) and carries the real Unicode on a transparent selection
-        // layer. Otherwise a single selectable span suffices.
-        if (renderText == realText)
+        // Feed the coalesced selection layer with the real Unicode (unless this run
+        // is inside a hidden optional-content group, whose painted output is
+        // discarded and so must not be selectable either).
+        if (_ocHiddenAtDepth < 0)
         {
-            AppendTextSpan(realText, fontHeight, targetWidth, transform, invisible, doFill, doStroke,
-                embedded: true, glyphLayer: false, selectable: true);
+            AccumulateSelectionText(realText, trm, left, top, fontHeight, targetWidth, linear);
         }
-        else
+
+        // Emit only the PAINTED layer. It is never selectable or searchable — all
+        // selection and find-in-page run against the coalesced layer above.
+        if (invisible)
         {
-            AppendTextSpan(renderText, fontHeight, targetWidth, transform, invisible, doFill, doStroke,
-                embedded: true, glyphLayer: true, selectable: false);
-            AppendTextSpan(realText, fontHeight, targetWidth, transform, invisible: true, doFill: false, doStroke: false,
-                embedded: false, glyphLayer: false, selectable: true);
+            // Render modes 3/7 (e.g. an OCR text layer over a scanned image) paint
+            // nothing, so there is no glyph layer and no embedded @font-face to
+            // inline — the coalesced selection span alone carries the text.
+            return;
         }
+        // A glyph-mapped run paints exact glyphs via PUA codepoints; a plain run
+        // paints its real text. Either way it is presentational only.
+        AppendTextSpan(renderText, fontHeight, targetWidth, left, top, linear,
+            doFill, doStroke, glyphLayer: renderText != realText);
     }
 
-    private void AppendTextSpan(string text, double fontHeight, double targetWidth, string transform,
-        bool invisible, bool doFill, bool doStroke, bool embedded, bool glyphLayer, bool selectable)
+    /// <summary>
+    /// Merges a text run into the current visual line of the coalesced selection
+    /// layer, or flushes the line and starts a new one when the run drops to a new
+    /// baseline, changes size, or breaks horizontal continuity. Rotated runs are
+    /// flushed individually (their geometry can't be reduced to a horizontal line).
+    /// </summary>
+    private void AccumulateSelectionText(string text, Matrix trm, double left, double top,
+        double fontHeight, double targetWidth, string linear)
+    {
+        if (text.Length == 0)
+        {
+            return;
+        }
+        double baseX = trm.E;
+        double baseY = trm.F;
+        bool upright = Math.Abs(trm.B) < 1e-3 && Math.Abs(trm.C) < 1e-3;
+
+        if (!upright)
+        {
+            // Non-horizontal text: emit as its own selection span, carrying the full
+            // linear transform (matrix + scaleX) so the highlight box stays aligned
+            // with the rotated glyphs.
+            FlushSelectionLine();
+            AppendSelectionSpan(text, left, top, fontHeight, targetWidth, linear);
+            return;
+        }
+
+        bool sameLine = _selActive
+            && Math.Abs(baseY - _selBaseY) <= fontHeight * 0.3
+            && Math.Abs(fontHeight - _selFontHeight) <= _selFontHeight * 0.25
+            && baseX >= _selEndX - fontHeight * 0.5;
+
+        if (!sameLine)
+        {
+            FlushSelectionLine();
+            _selActive = true;
+            _selText.Clear();
+            _selText.Append(text);
+            _selLeft = left;
+            _selTop = top;
+            _selFontHeight = fontHeight;
+            _selBaseY = baseY;
+            _selStartX = baseX;
+            _selEndX = baseX + targetWidth;
+            return;
+        }
+
+        // Same line: bridge a horizontal gap wider than a fraction of the em with a
+        // single space, so word boundaries survive and copied text stays readable.
+        double gap = baseX - _selEndX;
+        if (gap > fontHeight * 0.2 && _selText.Length > 0
+            && _selText[^1] != ' ' && text[0] != ' ')
+        {
+            _selText.Append(' ');
+        }
+        _selText.Append(text);
+        _selEndX = baseX + targetWidth;
+    }
+
+    /// <summary>Emits the accumulated visual line as one selection span.</summary>
+    private void FlushSelectionLine()
+    {
+        if (!_selActive)
+        {
+            return;
+        }
+        double width = _selEndX - _selStartX;
+        AppendSelectionSpan(_selText.ToString(), _selLeft, _selTop, _selFontHeight, width,
+            "scaleX(var(--bp-sx,1))");
+        _selActive = false;
+        _selText.Clear();
+    }
+
+    /// <summary>
+    /// Appends one transparent, selectable span to the selection layer buffer. A
+    /// presentational <c>&lt;br&gt;</c> separates lines so clipboard copy preserves
+    /// them. The span carries <c>data-w</c> so the viewer width-corrects it to the
+    /// run's true device advance (<c>--bp-sx</c>), matching the painted glyphs.
+    /// </summary>
+    private void AppendSelectionSpan(string text, double left, double top,
+        double fontHeight, double width, string transform)
+    {
+        if (_selLayer.Length > 0)
+        {
+            _selLayer.Append("<br>");
+        }
+        _selLayer.Append("<span data-bp-sel");
+        if (width > 0.01)
+        {
+            _selLayer.Append(string.Create(CultureInfo.InvariantCulture, $" data-w=\"{width:0.###}\""));
+        }
+        _selLayer.Append(string.Create(CultureInfo.InvariantCulture,
+            $" style=\"position:absolute;left:{left:0.##}px;top:{top:0.##}px;white-space:pre;line-height:1;font-size:{fontHeight:0.###}px;color:transparent;font-family:sans-serif;transform:{transform};transform-origin:0 0\">"));
+        _selLayer.Append(Escape(text));
+        _selLayer.Append("</span>");
+    }
+
+    private void AppendTextSpan(string text, double fontHeight, double targetWidth,
+        double left, double top, string linear,
+        bool doFill, bool doStroke, bool glyphLayer)
     {
         _html.Append("<span");
         if (glyphLayer)
         {
             _html.Append(" data-bp-glyph"); // painted glyphs; excluded from search
         }
-        // The transparent selection overlay for a glyph-mapped run (drawn in a
-        // substitute font over the painted glyphs). Marked so a ::selection rule can
-        // keep its text transparent — otherwise the browser paints the selected
-        // substitute glyphs opaque, stacking a wrong-font copy over the real ones.
-        if (selectable && !embedded)
-        {
-            _html.Append(" data-bp-sel");
-        }
         // The painted glyph layer uses the embedded font's real advance metrics, so
         // it must NOT be width-corrected (that would re-stretch correct glyphs). Only
-        // the selection layer and substitute-font runs get scaleX correction.
+        // substitute-font runs get scaleX correction.
         if (!glyphLayer && targetWidth > 0.01)
         {
             _html.Append(string.Create(CultureInfo.InvariantCulture, $" data-w=\"{targetWidth:0.###}\""));
         }
-        _html.Append(" style=\"position:absolute;left:0;top:0;white-space:pre;line-height:1");
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $" style=\"position:absolute;left:{left:0.##}px;top:{top:0.##}px;white-space:pre;line-height:1"));
         _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
         // Character/word spacing (Tc/Tw) are real inter-glyph gaps, not a stretch:
         // emit them as letter-/word-spacing so the run's natural width matches its
@@ -1455,27 +1583,19 @@ public sealed class HtmlRenderer
                 _html.Append(string.Create(CultureInfo.InvariantCulture, $";word-spacing:{ws:0.###}px"));
             }
         }
-        _html.Append(";color:").Append(invisible || !doFill ? "transparent" : _state.FillColor);
-        if (!invisible && doStroke)
+        _html.Append(";color:").Append(!doFill ? "transparent" : _state.FillColor);
+        if (doStroke)
         {
             double sw = Math.Max(_state.LineWidth * _state.Ctm.ScaleFactor, 0.1);
             _html.Append(string.Create(CultureInfo.InvariantCulture,
                 $";-webkit-text-stroke:{sw:0.###}px ")).Append(_state.StrokeColor);
         }
-        if (!selectable)
-        {
-            _html.Append(";user-select:none;-webkit-user-select:none;pointer-events:none");
-        }
-        if (embedded)
-        {
-            AppendFontStyle(_html, _state.Font!);
-        }
-        else
-        {
-            _html.Append(";font-family:").Append(_state.Font!.GenericFamily);
-        }
-        _html.Append(";transform:").Append(transform).Append(";transform-origin:0 0");
-        if (!invisible && doFill && _state.FillAlpha < 1)
+        // The painted layer never participates in selection or hit-testing; the
+        // coalesced selection layer above owns both.
+        _html.Append(";user-select:none;-webkit-user-select:none;pointer-events:none");
+        AppendFontStyle(_html, _state.Font!);
+        _html.Append(";transform:").Append(linear).Append(";transform-origin:0 0");
+        if (doFill && _state.FillAlpha < 1)
         {
             _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
         }
