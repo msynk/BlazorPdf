@@ -54,6 +54,87 @@ internal static class CssShadingBuilder
         };
     }
 
+    /// <summary>
+    /// Builds a canvas display-list gradient descriptor for
+    /// <paramref name="shading"/>: <c>[kind, coords, stops]</c> where kind 2/3 map
+    /// to <c>createLinearGradient</c>/<c>createRadialGradient</c> (coords in device
+    /// px, stops as <c>[pos 0..1, cssColor]</c> pairs) and kind 0 is a sampled
+    /// solid fallback (<c>coords = null</c>, stops = the color string). Returns
+    /// <c>null</c> when nothing can be painted.
+    /// </summary>
+    public static object?[]? BuildCanvasOp(Dict shading, IXRef xref, Dict? resources, Matrix ctm)
+    {
+        int type = shading.Get("ShadingType") is double d ? (int)d : 0;
+        var cs = ColorSpace.Create(shading.Get("ColorSpace"), xref, resources);
+        var fn = PdfFunction.Create(shading.Get("Function"), xref);
+
+        double[] domain = ReadNumbers(shading.Get("Domain"), xref);
+        if (domain.Length < 2)
+        {
+            domain = [0, 1];
+        }
+        double[] coords = ReadNumbers(shading.Get("Coords"), xref);
+
+        bool extendBefore = false, extendAfter = false;
+        if (shading.Get("Extend") is List<object?> ext && ext.Count >= 2)
+        {
+            extendBefore = ext[0] is bool b0 && b0;
+            extendAfter = ext[1] is bool b1 && b1;
+        }
+
+        if (type == 2 && coords.Length >= 4)
+        {
+            var (x0, y0) = ctm.Apply(coords[0], coords[1]);
+            var (x1, y1) = ctm.Apply(coords[2], coords[3]);
+            return [2, new[] { Math.Round(x0, 2), Math.Round(y0, 2), Math.Round(x1, 2), Math.Round(y1, 2) },
+                CanvasStops(domain, cs, fn, extendBefore, extendAfter)];
+        }
+        if (type == 3 && coords.Length >= 6)
+        {
+            double scale = ctm.ScaleFactor;
+            var (cx, cy) = ctm.Apply(coords[3], coords[4]);
+            double r0 = Math.Max(coords[2] * scale, 0);
+            double r1 = Math.Max(coords[5] * scale, 0.01);
+            // Canvas radial gradients clamp beyond both circles (an "extend both"
+            // approximation, like the CSS backend's single-circle mapping).
+            return [3, new[] { Math.Round(cx, 2), Math.Round(cy, 2), Math.Round(r0, 2), Math.Round(r1, 2) },
+                CanvasStops(domain, cs, fn, extendBefore: true, extendAfter: true)];
+        }
+
+        string? solid = BuildFallback(shading, domain, cs, fn);
+        return solid is null ? null : [0, null, solid];
+    }
+
+    /// <summary>
+    /// Samples the shading function into canvas gradient stops. A non-extended end
+    /// gets a transparent stop hard against the boundary so the gradient does not
+    /// clamp its end color across the rest of the fill (canvas pads past 0/1).
+    /// </summary>
+    private static object?[] CanvasStops(double[] domain, ColorSpace cs, PdfFunction? fn,
+        bool extendBefore, bool extendAfter)
+    {
+        var stops = new List<object?>(StopCount + 2);
+        var (r0, g0, b0) = SampleRgb(domain, 0, cs, fn);
+        if (!extendBefore)
+        {
+            stops.Add(new object?[] { 0.0, $"rgba({r0},{g0},{b0},0)" });
+        }
+        for (int i = 0; i < StopCount; i++)
+        {
+            double frac = (double)i / (StopCount - 1);
+            // Squeeze the sampled ramp just inside any transparent guard stops.
+            double pos = extendBefore && extendAfter ? frac : 0.001 + frac * 0.998;
+            var (r, g, b) = SampleRgb(domain, frac, cs, fn);
+            stops.Add(new object?[] { Math.Round(pos, 4), $"rgb({r},{g},{b})" });
+        }
+        if (!extendAfter)
+        {
+            var (r1, g1, b1) = SampleRgb(domain, 1, cs, fn);
+            stops.Add(new object?[] { 1.0, $"rgba({r1},{g1},{b1},0)" });
+        }
+        return stops.ToArray();
+    }
+
     private static string? BuildFallback(Dict shading, double[] domain, ColorSpace cs, PdfFunction? fn)
     {
         if (fn is not null)

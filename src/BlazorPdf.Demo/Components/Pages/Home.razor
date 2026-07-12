@@ -15,8 +15,16 @@
             <InputFile OnChange="LoadUploaded" accept="application/pdf" />
         </label>
 
-        <label class="option" title="Merge same-line text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with kerning between runs approximated.">
-            <input type="checkbox" checked="@_compactText" @onchange="OnCompactTextChanged" />
+        <label class="option" title="Paint pages onto a per-page canvas (pdf.js style) instead of positioned DOM. Selection, search and links stay DOM either way.">
+            Renderer
+            <select @onchange="OnRenderModeChanged">
+                <option value="Html" selected="@(!_canvasMode)">HTML</option>
+                <option value="Canvas" selected="@_canvasMode">Canvas</option>
+            </select>
+        </label>
+
+        <label class="option" title="Merge same-line text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with kerning between runs approximated. (HTML renderer only.)">
+            <input type="checkbox" checked="@_compactText" @onchange="OnCompactTextChanged" disabled="@_canvasMode" />
             Compact text spans
         </label>
 
@@ -26,6 +34,7 @@
     <BlazorPdfViewer Source="_source"
                      Height="800px"
                      InitialZoomMode="PdfZoomMode.FitWidth"
+                     RenderMode="@(_canvasMode ? PdfRenderMode.Canvas : PdfRenderMode.Html)"
                      TextCoalescing="@(_compactText ? PdfTextCoalescing.Compact : PdfTextCoalescing.Exact)"
                      OnDocumentLoaded="OnLoaded"
                      OnError="OnViewerError" />
@@ -35,6 +44,7 @@
     private PdfSource? _source;
     private string _status = "Pick a source above.";
     private bool _compactText;
+    private bool _canvasMode;
 
     private void OnCompactTextChanged(ChangeEventArgs e)
     {
@@ -42,6 +52,14 @@
         _status = _compactText
             ? "Compact text: one span per line."
             : "Exact text: one span per run.";
+    }
+
+    private void OnRenderModeChanged(ChangeEventArgs e)
+    {
+        _canvasMode = e.Value?.ToString() == "Canvas";
+        _status = _canvasMode
+            ? "Canvas renderer: pages painted onto <canvas>."
+            : "HTML renderer: pages rendered as positioned DOM.";
     }
 
     protected override void OnInitialized()

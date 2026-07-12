@@ -40,7 +40,14 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private double _zoom = 1.0;
     private PdfZoomMode _zoomMode = PdfZoomMode.FitWidth;
     private PdfTextCoalescing _textCoalescing; // last applied; changes re-render pages
+    private PdfRenderMode _renderMode;         // last applied; changes re-render pages
     private int _rotation;
+
+    // Canvas mode: per-page display lists, and the pages whose freshly (re)created
+    // canvases still need a JS replay after the current render.
+    private readonly Dictionary<int, string> _canvasOps = new();
+    private readonly List<int> _canvasDirty = new();
+    private double _paintedZoom = 1; // zoom the canvases were last rasterized at
     private bool _showThumbnails;
     private bool _showOutline;
     private IReadOnlyList<OutlineItem> _outline = Array.Empty<OutlineItem>();
@@ -86,6 +93,14 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     /// Default is <see cref="PdfTextCoalescing.Exact"/>.
     /// </summary>
     [Parameter] public PdfTextCoalescing TextCoalescing { get; set; } = PdfTextCoalescing.Exact;
+
+    /// <summary>
+    /// How page content is painted. <see cref="PdfRenderMode.Canvas"/> replays a
+    /// display list onto a per-page <c>&lt;canvas&gt;</c> (far fewer DOM nodes;
+    /// selection/search/links stay DOM), while <see cref="PdfRenderMode.Html"/>
+    /// (the default) renders prerenderable positioned DOM.
+    /// </summary>
+    [Parameter] public PdfRenderMode RenderMode { get; set; } = PdfRenderMode.Html;
 
     /// <summary>Raised when a document has finished loading.</summary>
     [Parameter] public EventCallback OnDocumentLoaded { get; set; }
@@ -153,15 +168,17 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             _rotation = 0;
             _currentPage = 1;
             _textCoalescing = TextCoalescing;
+            _renderMode = RenderMode;
             await LoadAsync();
             return;
         }
-        // Same document but the text-emission mode changed: invalidate and
-        // re-render the page fragments (same mechanism as rotation) so the new
-        // mode takes effect without reloading the document.
-        if (_textCoalescing != TextCoalescing)
+        // Same document but a rendering mode changed: invalidate and re-render
+        // the page fragments (same mechanism as rotation) so the new mode takes
+        // effect without reloading the document.
+        if (_textCoalescing != TextCoalescing || _renderMode != RenderMode)
         {
             _textCoalescing = TextCoalescing;
+            _renderMode = RenderMode;
             PreparePages();
         }
     }
@@ -228,6 +245,58 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             {
                 // Optional enhancement: a stale/cached script may not expose the
                 // function yet. Never let width correction break rendering.
+            }
+        }
+
+        // Canvas mode: replay the display lists of freshly (re)created page
+        // canvases at the current zoom. Fragments re-render on demand, so this
+        // runs after any render that added pages.
+        if (_canvasDirty.Count > 0 && _module is not null)
+        {
+            var payload = _canvasDirty
+                .Where(i => _canvasOps.ContainsKey(i) && i < _pageWidths.Count)
+                .Select(i => new { page = i + 1, w = _pageWidths[i], h = _pageHeights[i], ops = _canvasOps[i] })
+                .ToArray();
+            _canvasDirty.Clear();
+            if (payload.Length > 0)
+            {
+                _paintedZoom = _zoom;
+                try
+                {
+                    await _module.InvokeVoidAsync("paintCanvasPages", _containerRef, (object)payload, _zoom);
+                }
+                catch (JSDisconnectedException)
+                {
+                    // Circuit gone mid-render; ignore.
+                }
+                catch (JSException)
+                {
+                    // A stale/cached script may not expose the canvas interpreter
+                    // yet; pages stay blank until the script refreshes.
+                }
+            }
+        }
+
+        // Canvas mode: when the zoom changed, re-rasterize the already-painted
+        // canvases at the new scale (the pdf.js model). The CSS-scaled bitmap is
+        // visible immediately; the sharp replay swaps in when zooming settles
+        // (debounced on the JS side). Uses the ops cached on each canvas element,
+        // so no display lists cross the interop boundary again.
+        if (RenderMode == PdfRenderMode.Canvas && _module is not null
+            && Math.Abs(_zoom - _paintedZoom) > 0.001 && _pages.Count > 0)
+        {
+            _paintedZoom = _zoom;
+            try
+            {
+                await _module.InvokeVoidAsync("rezoomCanvases", _containerRef, _zoom);
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit gone mid-render; ignore.
+            }
+            catch (JSException)
+            {
+                // Stale script without rezoom support: pages stay CSS-scaled.
             }
         }
     }
@@ -373,6 +442,8 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         _thumbs.Clear();
         _pageWidths.Clear();
         _pageHeights.Clear();
+        _canvasOps.Clear();
+        _canvasDirty.Clear();
         if (_document is null)
         {
             return;
@@ -417,8 +488,20 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             DestinationResolver = dest => _document.ResolveDestinationPage(dest),
             TextCoalescing = TextCoalescing,
+            EmitCanvasOps = RenderMode == PdfRenderMode.Canvas,
         };
-        return new MarkupString(renderer.Render());
+        string html = renderer.Render();
+        // Canvas mode: hold the display list until the fragment's <canvas> exists
+        // in the DOM, then OnAfterRenderAsync replays it via JS.
+        if (renderer.CanvasOpsJson is { } ops)
+        {
+            _canvasOps[index] = ops;
+            if (!_canvasDirty.Contains(index))
+            {
+                _canvasDirty.Add(index);
+            }
+        }
+        return new MarkupString(html);
     }
 
     /// <summary>Renders a single page (1-based) to self-contained HTML, or an
@@ -505,6 +588,10 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             if ((i < keepLo || i > keepHi) && _pages[i] is not null)
             {
                 _pages[i] = null;
+                // The display list (with its base64 images) is regenerated when
+                // the page re-renders; don't hold it for evicted pages.
+                _canvasOps.Remove(i);
+                _canvasDirty.Remove(i);
             }
         }
     }
@@ -517,7 +604,23 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     /// cached in its own slot and survives the main page's eviction.
     /// </summary>
     private MarkupString RenderThumbContent(int index)
-        => _pages[index] ?? RenderPageContent(index);
+    {
+        // Canvas mode: page fragments are canvas placeholders whose pixels are
+        // painted by JS into the MAIN surface only — a reused fragment would show
+        // a blank thumbnail. Render sidebar thumbnails as self-contained HTML
+        // (Compact text keeps the tiny fragments light).
+        if (RenderMode == PdfRenderMode.Canvas)
+        {
+            _fontStore ??= new Core.Render.PdfFontStore();
+            var renderer = new Core.Render.HtmlRenderer(
+                _document!.Pages[index], _document.XRef, _fontStore, _rotation)
+            {
+                TextCoalescing = PdfTextCoalescing.Compact,
+            };
+            return new MarkupString(renderer.Render());
+        }
+        return _pages[index] ?? RenderPageContent(index);
+    }
 
     /// <summary>
     /// Invoked from JavaScript as thumbnails approach the sidebar viewport.

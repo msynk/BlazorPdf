@@ -359,6 +359,24 @@ export function printDocument(container) {
         if (clone) {
             clone.style.transform = "scale(" + ptToPx + ")";
             clone.style.transformOrigin = "top left";
+            // A cloned <canvas> loses its pixels: substitute a snapshot image so
+            // canvas-mode pages print their painted content.
+            const srcCanvases = inner.querySelectorAll("canvas[data-bp-canvas]");
+            const dstCanvases = clone.querySelectorAll("canvas[data-bp-canvas]");
+            srcCanvases.forEach((src, i) => {
+                const dst = dstCanvases[i];
+                if (!dst) {
+                    return;
+                }
+                try {
+                    const img = doc.createElement("img");
+                    img.src = src.toDataURL();
+                    img.style.cssText = src.style.cssText;
+                    dst.replaceWith(img);
+                } catch {
+                    /* tainted or unpainted canvas: leave the clone as-is */
+                }
+            });
         }
         doc.body.appendChild(sheet);
     });
@@ -376,6 +394,244 @@ export function printDocument(container) {
             frame.remove();
         }
     }, 300);
+}
+
+// ----- Canvas rendering (display-list replay) -----
+
+// Replays each page's display list (produced by the C# CanvasRenderer) onto its
+// <canvas data-bp-canvas> placeholder. `pages` is [{page, w, h, ops}] with ops a
+// JSON array of drawing ops; the op's first element is its code:
+//   ["g", path, evenOdd]                            save + clip
+//   ["G"]                                           restore
+//   ["f", path, evenOdd, color, alpha, blend]       fill
+//   ["s", path, color, width, cap, join, miter,     stroke
+//         dash, phase, alpha, blend]
+//   ["i", src, a,b,c,d,e,f, alpha, blend, pix]      image (matrix: pixel->device)
+//   ["t", text, size, family, bold, italic,         text (matrix: em->device,
+//         a,b,c,d,e,f, fill, stroke, strokeW,        origin on the baseline)
+//         targetW, alpha, blend, ls, ws]
+//   ["sh", kind, coords, stops, alpha, blend, bbox]  gradient fill of the clip
+// Path data is SVG syntax, consumed directly by Path2D.
+export async function paintCanvasPages(container, pages, scale) {
+    if (!container || !pages) {
+        return;
+    }
+    // Embedded @font-face fonts must be loaded before fillText can use them.
+    try {
+        if (document.fonts && document.fonts.ready) {
+            await document.fonts.ready;
+        }
+    } catch {
+        /* ignore */
+    }
+    for (const p of pages) {
+        const canvas = container.querySelector('[data-page="' + p.page + '"] canvas[data-bp-canvas]');
+        if (!canvas || !p.ops) {
+            continue;
+        }
+        let ops;
+        try {
+            ops = JSON.parse(p.ops);
+        } catch {
+            continue;
+        }
+        // Cache the display list (and decoded images) on the element so zoom
+        // changes can re-rasterize without another interop round-trip.
+        canvas.__bp = { ops, w: p.w, h: p.h, images: new Map() };
+        await replayOps(canvas, scale || 1);
+    }
+}
+
+// Re-rasterizes every painted canvas at the new zoom so text and lines stay
+// crisp instead of being CSS-upscaled (the pdf.js model: the CSS-scaled bitmap
+// shows instantly, the sharp re-render replaces it when zooming settles).
+// Debounced per container: zoom buttons and pinches arrive in bursts.
+const bpRezoomTimers = new WeakMap();
+export function rezoomCanvases(container, scale) {
+    if (!container) {
+        return;
+    }
+    clearTimeout(bpRezoomTimers.get(container));
+    bpRezoomTimers.set(container, setTimeout(() => {
+        container.querySelectorAll("canvas[data-bp-canvas]").forEach((canvas) => {
+            if (canvas.__bp) {
+                replayOps(canvas, scale || 1);
+            }
+        });
+    }, 180));
+}
+
+const BP_CAPS = ["butt", "round", "square"];
+const BP_JOINS = ["miter", "round", "bevel"];
+
+async function replayOps(canvas, scale) {
+    const { ops, w, h, images } = canvas.__bp;
+    // Rasterize at devicePixelRatio x zoom so the backing store matches the
+    // on-screen pixel density (the element is CSS-scaled by --bp-scale). Cap the
+    // backing store to stay inside browser canvas limits on large pages.
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    let px = dpr * Math.max(scale, 0.1);
+    px = Math.min(px, 8192 / w, 8192 / h, Math.sqrt(16777216 / (w * h)));
+    canvas.width = Math.max(1, Math.round(w * px));
+    canvas.height = Math.max(1, Math.round(h * px));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        return;
+    }
+
+    // @font-face faces load lazily — only when DOM text uses them — and canvas
+    // fillText never waits for (or reliably triggers) a load: it draws with the
+    // fallback immediately. In canvas mode no DOM references the embedded
+    // families, so without an explicit load the FIRST paint renders tofu until
+    // something replays. Force-load every face the ops use before drawing.
+    try {
+        if (document.fonts && document.fonts.load) {
+            const fonts = new Set();
+            for (const o of ops) {
+                if (o[0] === "t") {
+                    fonts.add((o[5] ? "italic " : "") + (o[4] ? "bold " : "") + "12px " + o[3]);
+                }
+            }
+            await Promise.all([...fonts].map((f) => document.fonts.load(f).catch(() => { })));
+        }
+    } catch {
+        /* ignore */
+    }
+
+    // Preload any images not already decoded (reused across zoom re-renders) so
+    // the replay itself is synchronous and in order.
+    await Promise.all(ops.filter((o) => o[0] === "i" && !images.has(o[1])).map((o) =>
+        new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => { images.set(o[1], img); resolve(); };
+            img.onerror = () => resolve();
+            img.src = o[1];
+        })));
+
+    ctx.setTransform(px, 0, 0, px, 0, 0);
+    let depth = 0;
+
+    const setPaintState = (alpha, blend) => {
+        ctx.globalAlpha = typeof alpha === "number" ? alpha : 1;
+        ctx.globalCompositeOperation = blend ? blend : "source-over";
+    };
+
+    for (const op of ops) {
+        try {
+            switch (op[0]) {
+                case "g": {
+                    ctx.save();
+                    depth++;
+                    ctx.clip(new Path2D(op[1]), op[2] ? "evenodd" : "nonzero");
+                    break;
+                }
+                case "G": {
+                    // Guarded: content hidden by optional-content groups can drop
+                    // one side of a save/restore pair.
+                    if (depth > 0) {
+                        ctx.restore();
+                        depth--;
+                    }
+                    break;
+                }
+                case "f": {
+                    setPaintState(op[4], op[5]);
+                    ctx.fillStyle = op[3];
+                    ctx.fill(new Path2D(op[1]), op[2] ? "evenodd" : "nonzero");
+                    break;
+                }
+                case "s": {
+                    setPaintState(op[9], op[10]);
+                    ctx.strokeStyle = op[2];
+                    ctx.lineWidth = op[3];
+                    ctx.lineCap = BP_CAPS[op[4]] || "butt";
+                    ctx.lineJoin = BP_JOINS[op[5]] || "miter";
+                    ctx.miterLimit = op[6] || 10;
+                    ctx.setLineDash(op[7] || []);
+                    ctx.lineDashOffset = op[8] || 0;
+                    ctx.stroke(new Path2D(op[1]));
+                    ctx.setLineDash([]);
+                    break;
+                }
+                case "i": {
+                    // ["i", src, a, b, c, d, e, f, alpha, blend, pixelated]
+                    const img = images.get(op[1]);
+                    if (!img) {
+                        break;
+                    }
+                    setPaintState(op[8], op[9]);
+                    ctx.save();
+                    ctx.transform(op[2], op[3], op[4], op[5], op[6], op[7]);
+                    ctx.imageSmoothingEnabled = !op[10];
+                    ctx.drawImage(img, 0, 0);
+                    ctx.restore();
+                    break;
+                }
+                case "t": {
+                    const [, text, size, family, bold, italic, a, b, c, d, e, f,
+                        fill, stroke, strokeW, targetW, alpha, blend, ls, ws] = op;
+                    setPaintState(alpha, blend);
+                    ctx.save();
+                    ctx.font = (italic ? "italic " : "") + (bold ? "bold " : "") + size + "px " + family;
+                    ctx.textBaseline = "alphabetic";
+                    if ("letterSpacing" in ctx) {
+                        ctx.letterSpacing = (ls || 0) + "px";
+                        ctx.wordSpacing = (ws || 0) + "px";
+                    }
+                    ctx.transform(a, b, c, d, e, f);
+                    // Width-correct the run to its PDF-computed advance (the same
+                    // scaleX(--bp-sx) mechanism as the HTML text layer, inline).
+                    if (targetW > 0.01) {
+                        const natural = ctx.measureText(text).width;
+                        if (natural > 0) {
+                            ctx.scale(targetW / natural, 1);
+                        }
+                    }
+                    if (fill) {
+                        ctx.fillStyle = fill;
+                        ctx.fillText(text, 0, 0);
+                    }
+                    if (stroke) {
+                        ctx.strokeStyle = stroke;
+                        ctx.lineWidth = strokeW || 1;
+                        ctx.strokeText(text, 0, 0);
+                    }
+                    ctx.restore();
+                    break;
+                }
+                case "sh": {
+                    const [, kind, coords, stops, alpha, blend, bbox] = op;
+                    setPaintState(alpha, blend);
+                    ctx.save();
+                    if (bbox) {
+                        ctx.clip(new Path2D(bbox));
+                    }
+                    if (kind === 0) {
+                        ctx.fillStyle = stops; // sampled solid fallback
+                    } else {
+                        const g = kind === 2
+                            ? ctx.createLinearGradient(coords[0], coords[1], coords[2], coords[3])
+                            : ctx.createRadialGradient(coords[0], coords[1], coords[2], coords[0], coords[1], coords[3]);
+                        for (const s of stops) {
+                            g.addColorStop(s[0], s[1]);
+                        }
+                        ctx.fillStyle = g;
+                    }
+                    ctx.fillRect(0, 0, w, h);
+                    ctx.restore();
+                    break;
+                }
+            }
+        } catch {
+            // One malformed op must not abort the page; skip it.
+        }
+    }
+
+    while (depth > 0) {
+        ctx.restore();
+        depth--;
+    }
+    setPaintState(1, "");
 }
 
 // ----- Text search (CSS Custom Highlight API) -----

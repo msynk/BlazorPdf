@@ -1,13 +1,21 @@
 # BlazorPdf
 
-A pure-C# PDF viewer component for Blazor. No `<canvas>` pixel blitting, no browser
-PDF plugin, no native interop, no commercial SDK.
+A pure-C# PDF viewer component for Blazor. No browser PDF plugin, no native
+interop, no commercial SDK.
 
-The rendering engine is written entirely in C#.
-It parses a PDF and renders each page into plain, positioned HTML/CSS DOM -
-`<div>` with CSS `clip-path` for vector fills and clips, `<span>` for selectable
-text, `<img>` for rasters, and CSS gradients for shadings. Because text stays as
-real DOM, selection, find-in-page and accessibility work for free.
+The rendering engine is written entirely in C#. By default it parses a PDF and
+renders each page into plain, positioned HTML/CSS DOM - `<div>` with CSS
+`clip-path` for vector fills and clips, `<span>` for selectable text, `<img>`
+for rasters, and CSS gradients for shadings. Because text stays as real DOM,
+selection, find-in-page and accessibility work for free, and pages prerender
+under server-side rendering.
+
+An optional **canvas renderer** (`RenderMode="PdfRenderMode.Canvas"`, the pdf.js
+model) paints the same engine's output onto a per-page `<canvas>` via a compact
+display list — far fewer DOM nodes on graphics-heavy documents — while
+selection, search and links still work through a DOM text layer, and zoom
+changes re-rasterize each page so text stays crisp. Canvas pages need
+JavaScript to paint, so they do not prerender.
 
 > **License:** Apache-2.0. See [`LICENSE`](LICENSE).
 
@@ -91,7 +99,8 @@ Register nothing special - the component ships its own JS module under
 | `Height`            | `string`              | `"780px"`      | CSS height of the viewer container.          |
 | `ShowToolbar`       | `bool`                | `true`         | Show the toolbar.                            |
 | `InitialZoomMode`   | `PdfZoomMode`         | `FitWidth`     | Initial zoom behavior.                       |
-| `TextCoalescing`    | `PdfTextCoalescing`   | `Exact`        | `Compact` merges same-line, same-style text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with small intra-line position drift (kerning between runs is approximated). Rotated text always stays exact. |
+| `RenderMode`        | `PdfRenderMode`       | `Html`         | `Canvas` paints page content onto a per-page `<canvas>` from a display list (selection/search/links stay DOM; zoom re-rasterizes for crisp text). Fewer DOM nodes, but requires JS — no prerender. |
+| `TextCoalescing`    | `PdfTextCoalescing`   | `Exact`        | `Compact` merges same-line, same-style text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with small intra-line position drift (kerning between runs is approximated). Rotated text always stays exact. HTML render mode only. |
 | `OnDocumentLoaded`  | `EventCallback`       | -              | Raised after a document loads.               |
 | `OnError`           | `EventCallback<string>` | -            | Raised on load/render failure.               |
 

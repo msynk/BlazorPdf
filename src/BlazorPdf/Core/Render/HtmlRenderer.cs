@@ -84,6 +84,30 @@ public sealed class HtmlRenderer
     private double _paintXScale = 1;
     private string _paintTail = string.Empty;
 
+    /// <summary>
+    /// When set, painted output is emitted as a canvas display list (retrieved
+    /// via <see cref="CanvasOpsJson"/> after <see cref="Render"/>) instead of
+    /// painted DOM. The returned HTML then carries only the page shell: a
+    /// <c>&lt;canvas&gt;</c> placeholder, the selectable text layer, and link
+    /// overlays. Used through <see cref="CanvasRenderer"/>.
+    /// </summary>
+    public bool EmitCanvasOps { get; set; }
+
+    /// <summary>The display list JSON after a canvas-mode render, else null.</summary>
+    public string? CanvasOpsJson { get; private set; }
+
+    /// <summary>Page width in CSS pixels after <see cref="Render"/>.</summary>
+    public double ViewWidth => _viewW;
+
+    /// <summary>Page height in CSS pixels after <see cref="Render"/>.</summary>
+    public double ViewHeight => _viewH;
+
+    // Canvas display list under construction (canvas mode only). Each op is a
+    // compact array whose first element is the op code, replayed in order by the
+    // viewer's JS interpreter (paintCanvasPages). Kept in lockstep with the HTML
+    // backend by emitting from the same paint funnels.
+    private List<object?[]>? _ops;
+
     // Operators a pending coalesced painted line may safely survive across: text
     // positioning/state ops touch nothing painted, and the show-text ops manage
     // the pending line themselves inside EmitText. Every other operator might
@@ -94,6 +118,45 @@ public sealed class HtmlRenderer
         "BT", "ET", "Tj", "TJ", "'", "\"", "Td", "TD", "Tm", "T*",
         "Tf", "Tc", "Tw", "Tz", "TL", "Ts", "Tr",
     };
+
+    /// <summary>
+    /// Appends one display-list op (canvas mode). Content inside a hidden
+    /// optional-content group is dropped, mirroring the HTML backend's buffer
+    /// diversion.
+    /// </summary>
+    private void Op(params object?[] op)
+    {
+        if (_ocHiddenAtDepth < 0)
+        {
+            _ops!.Add(op);
+        }
+    }
+
+    /// <summary>Rounds a display-list coordinate to keep the ops JSON compact.</summary>
+    private static double R(double v) => Math.Round(v, 2);
+
+    /// <summary>Rounds a matrix component (scales need more precision than coords).</summary>
+    private static double R4(double v) => Math.Round(v, 4);
+
+    /// <summary>
+    /// Closes open clip groups down to <paramref name="target"/>: nested
+    /// <c>&lt;/div&gt;</c>s in HTML mode, <c>restore</c> ops in canvas mode.
+    /// </summary>
+    private void CloseGroupsTo(int target)
+    {
+        while (_openGroups > target)
+        {
+            if (_ops is not null)
+            {
+                Op("G");
+            }
+            else
+            {
+                _html.Append("</div>");
+            }
+            _openGroups--;
+        }
+    }
 
     private readonly StringBuilder _fontFaces;         // document-wide accumulator (shared)
     private readonly HashSet<string> _emittedFamilies; // dedup across pages (shared)
@@ -169,6 +232,7 @@ public sealed class HtmlRenderer
         _baseMatrix = baseMatrix;
         _viewW = viewW;
         _viewH = viewH;
+        _ops = EmitCanvasOps ? new List<object?[]>() : null;
 
         List<Operation> ops;
         try
@@ -185,11 +249,7 @@ public sealed class HtmlRenderer
 
         FlushPaintedLine(); // pending Compact-mode text, inside any open groups
 
-        while (_openGroups > 0)
-        {
-            _html.Append("</div>");
-            _openGroups--;
-        }
+        CloseGroupsTo(0);
 
         FlushSelectionLine(); // emit the final accumulated line of selectable text
 
@@ -205,6 +265,16 @@ public sealed class HtmlRenderer
         if (_ownFontFaces && _pageFaces.Length > 0)
         {
             sb.Append("<style>").Append(_pageFaces).Append("</style>");
+        }
+        // Canvas mode: painted content went to the display list; the page carries
+        // a canvas placeholder (painted by the viewer's JS) below the remaining
+        // HTML (link overlays) and the selection layer.
+        if (_ops is not null)
+        {
+            sb.Append(string.Create(CultureInfo.InvariantCulture,
+                $"<canvas data-bp-canvas width=\"{(int)Math.Ceiling(viewW)}\" height=\"{(int)Math.Ceiling(viewH)}\" " +
+                $"style=\"position:absolute;left:0;top:0;width:{viewW:0.##}px;height:{viewH:0.##}px\"></canvas>"));
+            CanvasOpsJson = System.Text.Json.JsonSerializer.Serialize(_ops);
         }
         sb.Append(_html);
         // The coalesced selection/text layer sits on top of the painted content so
@@ -284,12 +354,7 @@ public sealed class HtmlRenderer
                 if (_stack.Count > 0)
                 {
                     _state = _stack.Pop();
-                    int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
-                    while (_openGroups > target)
-                    {
-                        _html.Append("</div>");
-                        _openGroups--;
-                    }
+                    CloseGroupsTo(_groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0);
                 }
                 break;
             case "cm":
@@ -498,13 +563,15 @@ public sealed class HtmlRenderer
 
         if (fill)
         {
-            if (_state.FillPattern is not null && TryRenderTilingFill(data, evenOdd))
+            // Canvas mode approximates pattern fills with the current fill colour
+            // (tiling replay and CSS-gradient paints are HTML-backend constructs).
+            if (_ops is null && _state.FillPattern is not null && TryRenderTilingFill(data, evenOdd))
             {
                 // Tiling pattern painted its cells into a clipped group.
             }
             else
             {
-                string fillPaint = _state.FillPattern is not null
+                string fillPaint = _ops is null && _state.FillPattern is not null
                     ? ResolveFillPaint(_state.FillPattern) ?? _state.FillColor
                     : _state.FillColor;
                 EmitFill(data, evenOdd, fillPaint, _state.FillAlpha);
@@ -523,6 +590,11 @@ public sealed class HtmlRenderer
 
     private void EmitFill(string pathData, bool evenOdd, string paint, double alpha)
     {
+        if (_ops is not null)
+        {
+            Op("f", pathData, evenOdd, paint, R(alpha), _state.BlendMode);
+            return;
+        }
         _html.Append("<div style=\"position:absolute;inset:0;background:");
         _html.Append(paint);
         _html.Append(";clip-path:path(");
@@ -550,6 +622,15 @@ public sealed class HtmlRenderer
     /// </summary>
     private void EmitStroke(string pathData, double deviceWidth)
     {
+        if (_ops is not null)
+        {
+            double[]? dashes = _state.DashArray is { Length: > 0 } da
+                ? Array.ConvertAll(da, v => R(Math.Max(0, v)))
+                : null;
+            Op("s", pathData, _state.StrokeColor, R(deviceWidth), _state.LineCap, _state.LineJoin,
+                R(_state.MiterLimit), dashes, R(_state.DashPhase), R(_state.StrokeAlpha), _state.BlendMode);
+            return;
+        }
         _html.Append(string.Create(CultureInfo.InvariantCulture,
             $"<svg width=\"{_viewW:0.##}\" height=\"{_viewH:0.##}\" viewBox=\"0 0 {_viewW:0.##} {_viewH:0.##}\" style=\"position:absolute;left:0;top:0;overflow:visible;pointer-events:none"));
         if (_state.BlendMode.Length > 0)
@@ -630,12 +711,19 @@ public sealed class HtmlRenderer
             return;
         }
 
-        _html.Append("<div style=\"position:absolute;inset:0;clip-path:path(");
-        if (evenOdd)
+        if (_ops is not null)
         {
-            _html.Append("evenodd,");
+            Op("g", data, evenOdd); // save + clip, restored by the matching "G"
         }
-        _html.Append('\'').Append(data).Append("')\">");
+        else
+        {
+            _html.Append("<div style=\"position:absolute;inset:0;clip-path:path(");
+            if (evenOdd)
+            {
+                _html.Append("evenodd,");
+            }
+            _html.Append('\'').Append(data).Append("')\">");
+        }
         _openGroups++;
     }
 
@@ -655,6 +743,22 @@ public sealed class HtmlRenderer
         Dict? shading = shadingObj as Dict ?? (shadingObj as PdfStream)?.Dict;
         if (shading is null)
         {
+            return;
+        }
+
+        if (_ops is not null)
+        {
+            // ["sh", kind, coords, stops, alpha, blend, bboxPath?]: kind 2/3 map to
+            // native canvas linear/radial gradients filling the current clip; kind 0
+            // is the sampled solid fallback for unsupported shading types.
+            object?[]? grad = CssShadingBuilder.BuildCanvasOp(shading, _xref, _resources, _state.Ctm);
+            if (grad is not null)
+            {
+                string? bboxPath = shading.Get("BBox") is List<object?> bb && bb.Count >= 4
+                    ? BBoxPathData(bb)
+                    : null;
+                Op("sh", grad[0], grad[1], grad[2], R(_state.FillAlpha), _state.BlendMode, bboxPath);
+            }
             return;
         }
 
@@ -689,13 +793,17 @@ public sealed class HtmlRenderer
     /// corners transformed by the current CTM into device space.
     /// </summary>
     private string BBoxClipPath(List<object?> bbox)
+        => $"clip-path:path('{BBoxPathData(bbox)}')";
+
+    /// <summary>SVG path data for a <c>/BBox</c> rectangle in device space.</summary>
+    private string BBoxPathData(List<object?> bbox)
     {
         var (c0x, c0y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[1]));
         var (c1x, c1y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[1]));
         var (c2x, c2y) = _state.Ctm.Apply(Num(bbox[2]), Num(bbox[3]));
         var (c3x, c3y) = _state.Ctm.Apply(Num(bbox[0]), Num(bbox[3]));
         return string.Create(CultureInfo.InvariantCulture,
-            $"clip-path:path('M{c0x:0.##} {c0y:0.##} L{c1x:0.##} {c1y:0.##} L{c2x:0.##} {c2y:0.##} L{c3x:0.##} {c3y:0.##} Z')");
+            $"M{c0x:0.##} {c0y:0.##} L{c1x:0.##} {c1y:0.##} L{c2x:0.##} {c2y:0.##} L{c3x:0.##} {c3y:0.##} Z");
     }
 
     // ----- XObjects -----
@@ -768,6 +876,15 @@ public sealed class HtmlRenderer
         // full resolution before the matrix scales it into place.
         Matrix unit = Matrix.Concat(_state.Ctm, new Matrix(1, 0, 0, -1, 0, 1));
         Matrix m = Matrix.Concat(unit, new Matrix(1.0 / pixelW, 0, 0, 1.0 / pixelH, 0, 0));
+
+        if (_ops is not null)
+        {
+            // The matrix maps image pixel space to device space; JS draws the
+            // decoded image at natural size under this transform.
+            Op("i", uri, R4(m.A), R4(m.B), R4(m.C), R4(m.D), R(m.E), R(m.F),
+                R(_state.FillAlpha), _state.BlendMode, !interpolate && IsUpscaled(pixelW, pixelH));
+            return;
+        }
 
         _html.Append("<img src=\"");
         _html.Append(uri);
@@ -917,8 +1034,12 @@ public sealed class HtmlRenderer
         // the group-level alpha/blend once (isolation:isolate approximates a
         // non-knockout group). Reset the inner alpha so member objects don't get
         // the group's alpha applied twice.
+        // Canvas mode has no group compositing surface: skip the wrap and leave
+        // the group alpha/blend on the state so members apply it per object (an
+        // approximation that differs only where group members overlap).
         bool groupWrap = false;
-        if (stream.Dict.Get("Group") is Dict grp && Primitives.IsName(grp.Get("S"), "Transparency")
+        if (_ops is null
+            && stream.Dict.Get("Group") is Dict grp && Primitives.IsName(grp.Get("S"), "Transparency")
             && (_state.FillAlpha < 1 || _state.BlendMode.Length > 0))
         {
             _html.Append("<div style=\"position:absolute;inset:0;isolation:isolate");
@@ -942,9 +1063,16 @@ public sealed class HtmlRenderer
         bool bboxClip = false;
         if (stream.Dict.Get("BBox") is List<object?> bbox && bbox.Count >= 4)
         {
-            _html.Append("<div style=\"position:absolute;inset:0;")
-                .Append(BBoxClipPath(bbox))
-                .Append("\">");
+            if (_ops is not null)
+            {
+                Op("g", BBoxPathData(bbox), false);
+            }
+            else
+            {
+                _html.Append("<div style=\"position:absolute;inset:0;")
+                    .Append(BBoxClipPath(bbox))
+                    .Append("\">");
+            }
             bboxClip = true;
         }
 
@@ -960,7 +1088,14 @@ public sealed class HtmlRenderer
 
         if (bboxClip)
         {
-            _html.Append("</div>");
+            if (_ops is not null)
+            {
+                Op("G");
+            }
+            else
+            {
+                _html.Append("</div>");
+            }
         }
         if (groupWrap)
         {
@@ -971,12 +1106,7 @@ public sealed class HtmlRenderer
         if (_stack.Count > 0)
         {
             _state = _stack.Pop();
-            int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
-            while (_openGroups > target)
-            {
-                _html.Append("</div>");
-                _openGroups--;
-            }
+            CloseGroupsTo(_groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0);
         }
         _formDepth--;
     }
@@ -1045,11 +1175,7 @@ public sealed class HtmlRenderer
 
         DrawForm(appearance);
 
-        while (_openGroups > 0)
-        {
-            _html.Append("</div>");
-            _openGroups--;
-        }
+        CloseGroupsTo(0);
     }
 
     private PdfStream? ResolveAppearance(Dict annot)
@@ -1427,12 +1553,7 @@ public sealed class HtmlRenderer
         if (_stack.Count > 0)
         {
             _state = _stack.Pop();
-            int target = _groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0;
-            while (_openGroups > target)
-            {
-                _html.Append("</div>");
-                _openGroups--;
-            }
+            CloseGroupsTo(_groupDepthStack.Count > 0 ? _groupDepthStack.Pop() : 0);
         }
         _formDepth--;
     }
@@ -1495,6 +1616,15 @@ public sealed class HtmlRenderer
             return;
         }
 
+        // Canvas mode: one fillText/strokeText op per run at its exact device
+        // matrix (no DOM cost, so no coalescing) — the selection layer above
+        // already carries the real Unicode.
+        if (_ops is not null)
+        {
+            EmitCanvasText(renderText, trm, fontHeight, targetWidth, doFill, doStroke);
+            return;
+        }
+
         // Compact mode: coalesce painted runs into one span per visual line.
         // Embedded fonts — including PUA glyph-mapped ones, which is how every
         // embedded font in this engine paints — coalesce too: the browser lays the
@@ -1519,6 +1649,36 @@ public sealed class HtmlRenderer
         FlushPaintedLine();
         AppendTextSpan(renderText, fontHeight, targetWidth, left, top, linear,
             doFill, doStroke, glyphLayer: renderText != realText);
+    }
+
+    /// <summary>
+    /// Emits one canvas text op. The matrix's linear part maps the run's local em
+    /// space (x right, y down, baseline at the origin) to device space — identical
+    /// to the HTML span's transform — and (e, f) is the baseline origin, matching
+    /// canvas's alphabetic textBaseline. The interpreter measures the drawn text
+    /// and applies scaleX width-correction to <paramref name="targetWidth"/>, the
+    /// run's PDF-computed advance (the data-w mechanism, done inline).
+    /// </summary>
+    private void EmitCanvasText(string text, Matrix trm, double fontHeight, double targetWidth,
+        bool doFill, bool doStroke)
+    {
+        PdfFont font = _state.Font!;
+        string family = FontFamilyList(font); // registers the @font-face on first use
+        double a = trm.A / fontHeight;
+        double b = trm.B / fontHeight;
+        double c = -trm.C / fontHeight;
+        double d = -trm.D / fontHeight;
+        double ls = 0, ws = 0;
+        if (_state.FontSize != 0)
+        {
+            ls = _state.CharSpacing * fontHeight / _state.FontSize;
+            ws = _state.WordSpacing * fontHeight / _state.FontSize;
+        }
+        double sw = doStroke ? Math.Max(_state.LineWidth * _state.Ctm.ScaleFactor, 0.1) : 0;
+        Op("t", text, R(fontHeight), family, font.Bold, font.Italic,
+            R4(a), R4(b), R4(c), R4(d), R(trm.E), R(trm.F),
+            doFill ? _state.FillColor : null, doStroke ? _state.StrokeColor : null, R(sw),
+            R(targetWidth), R(_state.FillAlpha), _state.BlendMode, R(ls), R(ws));
     }
 
     /// <summary>
@@ -1773,24 +1933,7 @@ public sealed class HtmlRenderer
 
     private void AppendFontStyle(StringBuilder sb, PdfFont font)
     {
-        if (font.HasEmbedded)
-        {
-            string family = font.FontFaceFamily;
-            if (_emittedFamilies.Add(family))
-            {
-                string b64 = Convert.ToBase64String(font.EmbeddedProgram!);
-                string fmt = font.EmbeddedFormat!;
-                string face =
-                    $"@font-face{{font-family:'{family}';src:url(data:font/{fmt};base64,{b64}) format('{fmt}');}}";
-                _fontFaces.Append(face);
-                _pageFaces.Append(face);
-            }
-            sb.Append(";font-family:").Append(family).Append(',').Append(font.GenericFamily);
-        }
-        else
-        {
-            sb.Append(";font-family:").Append(font.GenericFamily);
-        }
+        sb.Append(";font-family:").Append(FontFamilyList(font));
         if (font.Bold)
         {
             sb.Append(";font-weight:bold");
@@ -1799,6 +1942,31 @@ public sealed class HtmlRenderer
         {
             sb.Append(";font-style:italic");
         }
+    }
+
+    /// <summary>
+    /// The CSS font-family list for <paramref name="font"/>, registering the
+    /// embedded face's <c>@font-face</c> rule on first use. Canvas text uses the
+    /// same registered faces — <c>document.fonts</c> serves them to
+    /// <c>ctx.fillText</c> once loaded.
+    /// </summary>
+    private string FontFamilyList(PdfFont font)
+    {
+        if (!font.HasEmbedded)
+        {
+            return font.GenericFamily;
+        }
+        string family = font.FontFaceFamily;
+        if (_emittedFamilies.Add(family))
+        {
+            string b64 = Convert.ToBase64String(font.EmbeddedProgram!);
+            string fmt = font.EmbeddedFormat!;
+            string face =
+                $"@font-face{{font-family:'{family}';src:url(data:font/{fmt};base64,{b64}) format('{fmt}');}}";
+            _fontFaces.Append(face);
+            _pageFaces.Append(face);
+        }
+        return $"{family},{font.GenericFamily}";
     }
 
     private void ApplyExtGState(Operation op)
