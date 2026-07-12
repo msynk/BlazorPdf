@@ -1,6 +1,5 @@
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class DocumentInfoTests
 {
@@ -15,7 +14,7 @@ public class DocumentInfoTests
             "<< /Title (Quarterly Report) /Author (Ada) /Producer (BlazorPdf) " +
                 "/Creator (Unit Test) /CreationDate (D:20240115093000+02'00') /Company (Acme) >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1, trailerExtra: " /Info 4 0 R"));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1, trailerExtra: " /Info 4 0 R"));
 
         var meta = doc.Metadata;
         Assert.Equal("Quarterly Report", meta.Title);
@@ -33,7 +32,7 @@ public class DocumentInfoTests
     [Fact]
     public void Metadata_is_empty_when_no_info()
     {
-        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var doc = BlazorPdfDocument.Load(TestPdf.HelloWorld());
         Assert.Null(doc.Metadata.Title);
         Assert.Null(doc.Metadata.CreationDate);
     }
@@ -44,7 +43,7 @@ public class DocumentInfoTests
     [InlineData("20231231", 2023, 12, 31)]
     public void Parses_pdf_dates(string raw, int year, int month, int day)
     {
-        var date = PdfMetadata.ParseDate(raw);
+        var date = BlazorPdfMetadata.ParseDate(raw);
         Assert.NotNull(date);
         Assert.Equal(year, date!.Value.Year);
         Assert.Equal(month, date.Value.Month);
@@ -65,7 +64,7 @@ public class DocumentInfoTests
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
 
         Assert.Equal(4, doc.PageCount);
         Assert.Equal(["i", "ii", "1", "2"], doc.PageLabels);
@@ -74,7 +73,7 @@ public class DocumentInfoTests
     [Fact]
     public void Page_labels_default_to_page_number()
     {
-        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var doc = BlazorPdfDocument.Load(TestPdf.HelloWorld());
         Assert.Equal(["1"], doc.PageLabels);
     }
 
@@ -88,7 +87,7 @@ public class DocumentInfoTests
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] " +
                 "/CropBox [10 10 190 190] /TrimBox [20 20 180 180] >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         var page = doc.Pages[0];
 
         Assert.Equal([0, 0, 200, 200], page.MediaBox);
@@ -108,7 +107,7 @@ public class DocumentInfoTests
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [-10 -10 150 150] >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         Assert.Equal([0, 0, 100, 100], doc.Pages[0].CropBox);
     }
 }

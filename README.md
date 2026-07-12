@@ -10,7 +10,7 @@ for rasters, and CSS gradients for shadings. Because text stays as real DOM,
 selection, find-in-page and accessibility work for free, and pages prerender
 under server-side rendering.
 
-An optional **canvas renderer** (`RenderMode="PdfRenderMode.Canvas"`, the pdf.js
+An optional **canvas renderer** (`RenderMode="BlazorPdfRenderMode.Canvas"`, the pdf.js
 model) paints the same engine's output onto a per-page `<canvas>` via a compact
 display list — far fewer DOM nodes on graphics-heavy documents — while
 selection, search and links still work through a DOM text layer, and zoom
@@ -66,24 +66,24 @@ Targets `net10.0`.
 ## Usage
 
 Register nothing special - the component ships its own JS module under
-`_content/BlazorPdf/`. Provide a `PdfSource` built from in-memory bytes:
+`_content/BlazorPdf/`. Provide a `BlazorPdfSource` built from in-memory bytes:
 
 ```razor
 @using BlazorPdf
 
 <BlazorPdfViewer Source="@_source"
                  Height="800px"
-                 InitialZoomMode="PdfZoomMode.FitWidth"
+                 InitialZoomMode="BlazorPdfZoomMode.FitWidth"
                  OnDocumentLoaded="OnLoaded"
                  OnError="OnError" />
 
 @code {
-    private PdfSource? _source;
+    private BlazorPdfSource? _source;
 
     protected override async Task OnInitializedAsync()
     {
         byte[] bytes = await File.ReadAllBytesAsync("sample.pdf");
-        _source = PdfSource.FromBytes(bytes, "sample.pdf");
+        _source = BlazorPdfSource.FromBytes(bytes, "sample.pdf");
     }
 
     private void OnLoaded() { /* document ready */ }
@@ -95,12 +95,12 @@ Register nothing special - the component ships its own JS module under
 
 | Parameter           | Type                  | Default        | Description                                  |
 | ------------------- | --------------------- | -------------- | -------------------------------------------- |
-| `Source`            | `PdfSource?`          | `null`         | The document to display (in-memory bytes).   |
+| `Source`            | `BlazorPdfSource?`          | `null`         | The document to display (in-memory bytes).   |
 | `Height`            | `string`              | `"780px"`      | CSS height of the viewer container.          |
 | `ShowToolbar`       | `bool`                | `true`         | Show the toolbar.                            |
-| `InitialZoomMode`   | `PdfZoomMode`         | `FitWidth`     | Initial zoom behavior.                       |
-| `RenderMode`        | `PdfRenderMode`       | `Html`         | `Canvas` paints page content onto a per-page `<canvas>` from a display list (selection/search/links stay DOM; zoom re-rasterizes for crisp text). Fewer DOM nodes, but requires JS — no prerender. |
-| `TextCoalescing`    | `PdfTextCoalescing`   | `Exact`        | `Compact` merges same-line, same-style text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with small intra-line position drift (kerning between runs is approximated). Rotated text always stays exact. HTML render mode only. |
+| `InitialZoomMode`   | `BlazorPdfZoomMode`         | `FitWidth`     | Initial zoom behavior.                       |
+| `RenderMode`        | `BlazorPdfRenderMode`       | `Html`         | `Canvas` paints page content onto a per-page `<canvas>` from a display list (selection/search/links stay DOM; zoom re-rasterizes for crisp text). Fewer DOM nodes, but requires JS — no prerender. |
+| `TextCoalescing`    | `BlazorPdfTextCoalescing`   | `Exact`        | `Compact` merges same-line, same-style text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with small intra-line position drift (kerning between runs is approximated). Rotated text always stays exact. HTML render mode only. |
 | `OnDocumentLoaded`  | `EventCallback`       | -              | Raised after a document loads.               |
 | `OnError`           | `EventCallback<string>` | -            | Raised on load/render failure.               |
 
@@ -109,19 +109,18 @@ Register nothing special - the component ships its own JS module under
 The parsing/rendering core has no Blazor dependency and can be used on its own:
 
 ```csharp
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
+using BlazorPdf;
 
-PdfDocument doc = PdfDocument.Load(bytes);
+BlazorPdfDocument doc = BlazorPdfDocument.Load(bytes);
 
-foreach (PdfPage page in doc.Pages)
+foreach (BlazorPdfPage page in doc.Pages)
 {
-    string html = new HtmlRenderer(page, doc.XRef).Render();
+    string html = new BlazorPdfHtmlRenderer(page, doc.XRef).Render();
     // html is a self-contained, positioned <div> for the page
 }
 
 // Document outline (bookmarks), with destinations resolved to page numbers:
-foreach (OutlineItem item in doc.Outline)
+foreach (BlazorPdfOutlineItem item in doc.Outline)
 {
     Console.WriteLine($"{item.Title} -> page {item.PageNumber}");
 }

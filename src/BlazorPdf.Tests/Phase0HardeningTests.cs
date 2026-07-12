@@ -1,8 +1,6 @@
 using System.Text;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Regression tests for the Phase 0 security &amp; process-safety hotfixes:
@@ -23,8 +21,8 @@ public class Phase0HardeningTests
             "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] " +
                 "/A << /S /URI /URI (javascript:alert\\(1\\)) >> >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         Assert.DoesNotContain("javascript:", html);
         Assert.DoesNotContain("<a ", html);
@@ -42,8 +40,8 @@ public class Phase0HardeningTests
             "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] " +
                 "/A << /S /URI /URI (https://example.com/) >> >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         Assert.Contains("<a href=\"https://example.com/\"", html);
         Assert.Contains("rel=\"noopener noreferrer\"", html);
@@ -54,9 +52,9 @@ public class Phase0HardeningTests
     public void Deeply_nested_arrays_throw_instead_of_crashing()
     {
         byte[] bytes = Encoding.Latin1.GetBytes(new string('[', 4096));
-        var parser = new Parser(new Lexer(new PdfStream(bytes)));
+        var parser = new BlazorPdfParser(new BlazorPdfLexer(new BlazorPdfStream(bytes)));
 
-        Assert.Throws<PdfFormatException>(() => parser.GetObj());
+        Assert.Throws<BlazorPdfFormatException>(() => parser.GetObj());
     }
 
     // 0.3 — a page tree with duplicate /Kids refs must not duplicate pages.
@@ -69,7 +67,7 @@ public class Phase0HardeningTests
             "<< /Type /Pages /Kids [3 0 R 3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
 
         Assert.Equal(1, doc.PageCount);
     }
@@ -88,8 +86,8 @@ public class Phase0HardeningTests
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         Assert.Contains("SecretLayer", html);
         Assert.Contains("color:transparent", html);
@@ -109,6 +107,6 @@ public class Phase0HardeningTests
         byte[] pdf = TestPdf.Build(bodies, rootObjNum: 1,
             trailerExtra: " /Encrypt 4 0 R /ID [<01020304> <01020304>]");
 
-        Assert.Throws<PdfUnsupportedEncryptionException>(() => PdfDocument.Load(pdf));
+        Assert.Throws<BlazorPdfUnsupportedEncryptionException>(() => BlazorPdfDocument.Load(pdf));
     }
 }

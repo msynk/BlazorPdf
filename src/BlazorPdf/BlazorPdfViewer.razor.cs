@@ -1,6 +1,4 @@
 using System.Net.Http;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
@@ -15,9 +13,9 @@ namespace BlazorPdf;
 /// </summary>
 public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 {
-    private PdfSource? _source;
-    private PdfDocument? _document;
-    private Core.Render.PdfFontStore? _fontStore;
+    private BlazorPdfSource? _source;
+    private BlazorPdfDocument? _document;
+    private BlazorPdfFontStore? _fontStore;
     private bool _correctWidthsPending; // run the JS text width-correction after render
     private string?[]? _pageText; // lazily-built per-page text index for search
     private int _loadVersion; // bumped per load; guards against a superseded load committing
@@ -38,9 +36,9 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private int _currentPage = 1;
     private double _zoom = 1.0;
-    private PdfZoomMode _zoomMode = PdfZoomMode.FitWidth;
-    private PdfTextCoalescing _textCoalescing; // last applied; changes re-render pages
-    private PdfRenderMode _renderMode;         // last applied; changes re-render pages
+    private BlazorPdfZoomMode _zoomMode = BlazorPdfZoomMode.FitWidth;
+    private BlazorPdfTextCoalescing _textCoalescing; // last applied; changes re-render pages
+    private BlazorPdfRenderMode _renderMode;         // last applied; changes re-render pages
     private int _rotation;
 
     // Canvas mode: per-page display lists, and the pages whose freshly (re)created
@@ -50,7 +48,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private double _paintedZoom = 1; // zoom the canvases were last rasterized at
     private bool _showThumbnails;
     private bool _showOutline;
-    private IReadOnlyList<OutlineItem> _outline = Array.Empty<OutlineItem>();
+    private IReadOnlyList<BlazorPdfOutlineItem> _outline = Array.Empty<BlazorPdfOutlineItem>();
 
     private bool _showSearch;
     private string _searchQuery = "";
@@ -74,7 +72,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private bool _thumbSpyPending; // (re)attach the sidebar's lazy-render spy after render
 
     /// <summary>The document to display.</summary>
-    [Parameter] public PdfSource? Source { get; set; }
+    [Parameter] public BlazorPdfSource? Source { get; set; }
 
     /// <summary>CSS height of the viewer container.</summary>
     [Parameter] public string Height { get; set; } = "780px";
@@ -83,24 +81,24 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     [Parameter] public bool ShowToolbar { get; set; } = true;
 
     /// <summary>The initial zoom behavior.</summary>
-    [Parameter] public PdfZoomMode InitialZoomMode { get; set; } = PdfZoomMode.FitWidth;
+    [Parameter] public BlazorPdfZoomMode InitialZoomMode { get; set; } = BlazorPdfZoomMode.FitWidth;
 
     /// <summary>
-    /// How painted text is emitted. <see cref="PdfTextCoalescing.Compact"/> merges
+    /// How painted text is emitted. <see cref="BlazorPdfTextCoalescing.Compact"/> merges
     /// same-line, same-style runs into one span per visual line — far fewer DOM
     /// nodes on per-glyph PDFs, with small intra-line position drift (explicit
     /// kerning between runs is approximated). Rotated text always stays exact.
-    /// Default is <see cref="PdfTextCoalescing.Exact"/>.
+    /// Default is <see cref="BlazorPdfTextCoalescing.Exact"/>.
     /// </summary>
-    [Parameter] public PdfTextCoalescing TextCoalescing { get; set; } = PdfTextCoalescing.Exact;
+    [Parameter] public BlazorPdfTextCoalescing TextCoalescing { get; set; } = BlazorPdfTextCoalescing.Exact;
 
     /// <summary>
-    /// How page content is painted. <see cref="PdfRenderMode.Canvas"/> replays a
+    /// How page content is painted. <see cref="BlazorPdfRenderMode.Canvas"/> replays a
     /// display list onto a per-page <c>&lt;canvas&gt;</c> (far fewer DOM nodes;
-    /// selection/search/links stay DOM), while <see cref="PdfRenderMode.Html"/>
+    /// selection/search/links stay DOM), while <see cref="BlazorPdfRenderMode.Html"/>
     /// (the default) renders prerenderable positioned DOM.
     /// </summary>
-    [Parameter] public PdfRenderMode RenderMode { get; set; } = PdfRenderMode.Html;
+    [Parameter] public BlazorPdfRenderMode RenderMode { get; set; } = BlazorPdfRenderMode.Html;
 
     /// <summary>Raised when a document has finished loading.</summary>
     [Parameter] public EventCallback OnDocumentLoaded { get; set; }
@@ -282,7 +280,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         // visible immediately; the sharp replay swaps in when zooming settles
         // (debounced on the JS side). Uses the ops cached on each canvas element,
         // so no display lists cross the interop boundary again.
-        if (RenderMode == PdfRenderMode.Canvas && _module is not null
+        if (RenderMode == BlazorPdfRenderMode.Canvas && _module is not null
             && Math.Abs(_zoom - _paintedZoom) > 0.001 && _pages.Count > 0)
         {
             _paintedZoom = _zoom;
@@ -308,10 +306,10 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     // Parse off the UI thread on Blazor Server so a large document doesn't freeze
     // the circuit; on single-threaded WASM this runs inline (Task.Run offers no
     // parallelism there, and the surrounding Task.Yield already lets the bar paint).
-    private static Task<PdfDocument> ParseAsync(byte[] bytes, string? password)
+    private static Task<BlazorPdfDocument> ParseAsync(byte[] bytes, string? password)
         => OperatingSystem.IsBrowser()
-            ? Task.FromResult(PdfDocument.Load(bytes, password))
-            : Task.Run(() => PdfDocument.Load(bytes, password));
+            ? Task.FromResult(BlazorPdfDocument.Load(bytes, password))
+            : Task.Run(() => BlazorPdfDocument.Load(bytes, password));
 
     private async Task LoadAsync()
     {
@@ -324,7 +322,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         _pageText = null;  // invalidate the search text index
         _searchTotal = 0;
         _searchIndex = -1;
-        _outline = Array.Empty<OutlineItem>();
+        _outline = Array.Empty<BlazorPdfOutlineItem>();
 
         if (_source is null)
         {
@@ -386,7 +384,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             {
                 _document = await ParseAsync(bytes, _source.Password);
             }
-            catch (PdfPasswordException) when (OnPasswordRequested is not null)
+            catch (BlazorPdfPasswordException) when (OnPasswordRequested is not null)
             {
                 // Ask the host for a password and retry once. The callback returns
                 // null to cancel.
@@ -409,7 +407,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
             }
             catch
             {
-                _outline = Array.Empty<OutlineItem>();
+                _outline = Array.Empty<BlazorPdfOutlineItem>();
             }
             _status = $"{_document.PageCount} page(s).";
             _spyPending = true;
@@ -482,13 +480,13 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private MarkupString RenderPageContent(int index)
     {
         var page = _document!.Pages[index];
-        _fontStore ??= new Core.Render.PdfFontStore();
+        _fontStore ??= new BlazorPdfFontStore();
         _correctWidthsPending = true; // measure/scale text runs after this render
-        var renderer = new Core.Render.HtmlRenderer(page, _document.XRef, _fontStore, _rotation)
+        var renderer = new BlazorPdfHtmlRenderer(page, _document.XRef, _fontStore, _rotation)
         {
             DestinationResolver = dest => _document.ResolveDestinationPage(dest),
             TextCoalescing = TextCoalescing,
-            EmitCanvasOps = RenderMode == PdfRenderMode.Canvas,
+            EmitCanvasOps = RenderMode == BlazorPdfRenderMode.Canvas,
         };
         string html = renderer.Render();
         // Canvas mode: hold the display list until the fragment's <canvas> exists
@@ -512,7 +510,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             return string.Empty;
         }
-        return new Core.Render.HtmlRenderer(_document.Pages[pageNumber - 1], _document.XRef, _rotation)
+        return new BlazorPdfHtmlRenderer(_document.Pages[pageNumber - 1], _document.XRef, _rotation)
         {
             TextCoalescing = TextCoalescing,
         }.Render();
@@ -609,13 +607,13 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         // painted by JS into the MAIN surface only — a reused fragment would show
         // a blank thumbnail. Render sidebar thumbnails as self-contained HTML
         // (Compact text keeps the tiny fragments light).
-        if (RenderMode == PdfRenderMode.Canvas)
+        if (RenderMode == BlazorPdfRenderMode.Canvas)
         {
-            _fontStore ??= new Core.Render.PdfFontStore();
-            var renderer = new Core.Render.HtmlRenderer(
+            _fontStore ??= new BlazorPdfFontStore();
+            var renderer = new BlazorPdfHtmlRenderer(
                 _document!.Pages[index], _document.XRef, _fontStore, _rotation)
             {
-                TextCoalescing = PdfTextCoalescing.Compact,
+                TextCoalescing = BlazorPdfTextCoalescing.Compact,
             };
             return new MarkupString(renderer.Render());
         }
@@ -777,7 +775,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     [JSInvokable]
     public async Task OnViewportResized()
     {
-        if (_zoomMode != PdfZoomMode.Custom)
+        if (_zoomMode != BlazorPdfZoomMode.Custom)
         {
             await ApplyFitAsync();
             StateHasChanged();
@@ -800,15 +798,15 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private Task SetCustomZoom(double zoom)
     {
-        _zoomMode = PdfZoomMode.Custom;
+        _zoomMode = BlazorPdfZoomMode.Custom;
         _zoom = Math.Clamp(zoom, 0.1, 8.0);
         return Task.CompletedTask;
     }
 
-    private async Task SetZoomMode(PdfZoomMode mode)
+    private async Task SetZoomMode(BlazorPdfZoomMode mode)
     {
         _zoomMode = mode;
-        if (mode == PdfZoomMode.ActualSize)
+        if (mode == BlazorPdfZoomMode.ActualSize)
         {
             _zoom = 1.0;
         }
@@ -820,7 +818,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     private async Task ApplyFitAsync()
     {
-        if (_module is null || _pages.Count == 0 || _zoomMode is PdfZoomMode.Custom or PdfZoomMode.ActualSize)
+        if (_module is null || _pages.Count == 0 || _zoomMode is BlazorPdfZoomMode.Custom or BlazorPdfZoomMode.ActualSize)
         {
             return;
         }
@@ -836,7 +834,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         const double padding = 32; // surface padding + page margin
 
         double fitWidth = (vp.Width - padding) / maxW;
-        _zoom = _zoomMode == PdfZoomMode.FitPage
+        _zoom = _zoomMode == BlazorPdfZoomMode.FitPage
             ? Math.Min(fitWidth, (vp.Height - padding) / maxH)
             : fitWidth;
         _zoom = Math.Clamp(_zoom, 0.1, 8.0);
@@ -953,7 +951,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     /// <summary>Whether the document exposes any bookmarks.</summary>
     public bool HasOutline => _outline.Count > 0;
 
-    private async Task OnOutlineClick(OutlineItem item)
+    private async Task OnOutlineClick(BlazorPdfOutlineItem item)
     {
         if (item.PageNumber is int pageNo)
         {

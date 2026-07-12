@@ -1,8 +1,5 @@
-using BlazorPdf.Core;
-using BlazorPdf.Core.Fonts;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class Type3FontTests
 {
@@ -38,9 +35,9 @@ public class Type3FontTests
     [Fact]
     public void Type3_font_is_recognized()
     {
-        var doc = PdfDocument.Load(BuildType3Document());
-        var fontDict = (Dict)doc.Pages[0].Resources!.Get("Font")!;
-        var font = PdfFont.Create((Dict)((Dict)fontDict).Get("F1")!, doc.XRef);
+        var doc = BlazorPdfDocument.Load(BuildType3Document());
+        var fontDict = (BlazorPdfDict)doc.Pages[0].Resources!.Get("Font")!;
+        var font = BlazorPdfFont.Create((BlazorPdfDict)((BlazorPdfDict)fontDict).Get("F1")!, doc.XRef);
 
         Assert.True(font.IsType3);
         Assert.NotNull(font.Type3);
@@ -51,8 +48,8 @@ public class Type3FontTests
     [Fact]
     public void Type3_glyph_procedure_is_rendered_as_graphics()
     {
-        var doc = PdfDocument.Load(BuildType3Document());
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(BuildType3Document());
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         // The glyph is drawn by executing its procedure (a rectangle fill),
         // which the HTML renderer emits as a clip-path filled <div>, not a <span>.

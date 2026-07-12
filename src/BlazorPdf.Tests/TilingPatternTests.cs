@@ -1,8 +1,6 @@
 using System.Text.RegularExpressions;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class TilingPatternTests
 {
@@ -31,8 +29,8 @@ public class TilingPatternTests
     [Fact]
     public void Tiling_pattern_fill_emits_multiple_cells()
     {
-        var doc = PdfDocument.Load(BuildTilingDocument());
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(BuildTilingDocument());
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         // Many clipped cells are emitted rather than a single solid fill.
         int clips = Regex.Matches(html, "clip-path:path\\(").Count;
@@ -53,8 +51,8 @@ public class TilingPatternTests
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
             TestPdf.Stream("1 0 0 rg 0 0 100 100 re f"),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         Assert.Contains("background:rgb(255,0,0)", html);
     }

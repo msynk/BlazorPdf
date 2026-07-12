@@ -1,6 +1,5 @@
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>Phase 5: viewer/engine public API additions.</summary>
 public class Phase5ViewerTests
@@ -9,7 +8,7 @@ public class Phase5ViewerTests
     [Fact]
     public void Extracts_page_text_without_rendering()
     {
-        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var doc = BlazorPdfDocument.Load(TestPdf.HelloWorld());
         string text = doc.Pages[0].ExtractText();
         Assert.Contains("Hello", text);
     }
@@ -27,7 +26,7 @@ public class Phase5ViewerTests
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         string text = doc.Pages[0].ExtractText();
 
         Assert.Contains("Foo", text);

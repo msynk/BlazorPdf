@@ -1,10 +1,9 @@
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Phase 4B: an encrypted document must validate the password (Algorithm 6/7)
-/// before accepting a key, and raise a typed <see cref="PdfPasswordException"/>
+/// before accepting a key, and raise a typed <see cref="BlazorPdfPasswordException"/>
 /// when the password is missing or wrong — rather than silently loading garbage.
 /// </summary>
 public class EncryptionTests
@@ -28,14 +27,14 @@ public class EncryptionTests
     [Fact]
     public void Missing_password_reports_not_provided()
     {
-        var ex = Assert.Throws<PdfPasswordException>(() => PdfDocument.Load(EncryptedPdf()));
+        var ex = Assert.Throws<BlazorPdfPasswordException>(() => BlazorPdfDocument.Load(EncryptedPdf()));
         Assert.False(ex.WasProvided);
     }
 
     [Fact]
     public void Wrong_password_reports_provided()
     {
-        var ex = Assert.Throws<PdfPasswordException>(() => PdfDocument.Load(EncryptedPdf(), "wrong-password"));
+        var ex = Assert.Throws<BlazorPdfPasswordException>(() => BlazorPdfDocument.Load(EncryptedPdf(), "wrong-password"));
         Assert.True(ex.WasProvided);
     }
 
@@ -43,9 +42,9 @@ public class EncryptionTests
     public void Document_reports_encrypted_flag()
     {
         // IsEncrypted is derived from the trailer and must not require a password.
-        var xref = new XRef(EncryptedPdf());
+        var xref = new BlazorPdfXRef(EncryptedPdf());
         // Parsing throws (no valid password), but the exception itself confirms
         // the encryption path was reached.
-        Assert.ThrowsAny<PdfPasswordException>(() => xref.Parse());
+        Assert.ThrowsAny<BlazorPdfPasswordException>(() => xref.Parse());
     }
 }

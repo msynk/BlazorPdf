@@ -1,6 +1,5 @@
-using BlazorPdf.Core.Fonts;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class GlyphListTests
 {
@@ -14,7 +13,7 @@ public class GlyphListTests
     [InlineData("quoteright", "\u2019")]
     [InlineData("fi", "fi")]
     public void Maps_named_glyphs(string name, string expected)
-        => Assert.Equal(expected, GlyphList.ToUnicode(name));
+        => Assert.Equal(expected, BlazorPdfGlyphList.ToUnicode(name));
 
     [Theory]
     [InlineData("uni0041", "A")]
@@ -23,15 +22,15 @@ public class GlyphListTests
     [InlineData("u00E9", "\u00E9")]
     [InlineData("u1F600", "\U0001F600")] // astral plane
     public void Resolves_algorithmic_names(string name, string expected)
-        => Assert.Equal(expected, GlyphList.ToUnicode(name));
+        => Assert.Equal(expected, BlazorPdfGlyphList.ToUnicode(name));
 
     [Fact]
     public void Strips_variant_suffix()
-        => Assert.Equal("a", GlyphList.ToUnicode("a.sc"));
+        => Assert.Equal("a", BlazorPdfGlyphList.ToUnicode("a.sc"));
 
     [Fact]
     public void Joins_ligature_components()
-        => Assert.Equal("ff", GlyphList.ToUnicode("f_f"));
+        => Assert.Equal("ff", BlazorPdfGlyphList.ToUnicode("f_f"));
 
     [Theory]
     [InlineData("Alpha", "\u0391")]
@@ -41,18 +40,18 @@ public class GlyphListTests
     [InlineData("universal", "\u2200")]
     [InlineData("integral", "\u222B")]
     public void Maps_symbol_glyphs(string name, string expected)
-        => Assert.Equal(expected, GlyphList.ToUnicode(name));
+        => Assert.Equal(expected, BlazorPdfGlyphList.ToUnicode(name));
 
     [Theory]
     [InlineData("a1", "\u2701")]
     [InlineData("a13", "\u270C")]
     [InlineData("a120", "\u2460")]
     public void Maps_dingbats_glyphs(string name, string expected)
-        => Assert.Equal(expected, GlyphList.ToUnicode(name));
+        => Assert.Equal(expected, BlazorPdfGlyphList.ToUnicode(name));
 
     [Fact]
     public void Latin_meaning_wins_over_symbol_name()
-        => Assert.Equal("A", GlyphList.ToUnicode("A")); // not Greek Alpha
+        => Assert.Equal("A", BlazorPdfGlyphList.ToUnicode("A")); // not Greek Alpha
 
     [Theory]
     [InlineData(".notdef")]
@@ -60,5 +59,5 @@ public class GlyphListTests
     [InlineData("g42")]
     [InlineData("cid123")]
     public void Returns_empty_for_unmappable(string name)
-        => Assert.Equal(string.Empty, GlyphList.ToUnicode(name));
+        => Assert.Equal(string.Empty, BlazorPdfGlyphList.ToUnicode(name));
 }

@@ -1,7 +1,5 @@
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Renders single pages whose content streams exercise specific operators, and
@@ -19,8 +17,8 @@ public class RenderOperatorTests
                 "/Resources << >> /Contents 4 0 R >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
     }
 
     [Fact]
@@ -89,8 +87,8 @@ public class RenderOperatorTests
             "[ /Separation /Spot /DeviceCMYK 6 0 R ]",
             "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 1 0] /N 1 >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
         // Full tint -> CMYK (0,1,1,0) -> red-orange through the pdf.js polynomial.
         Assert.Contains("rgb(255,46,23)", html);
     }

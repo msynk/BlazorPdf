@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace BlazorPdf.Demo;
+namespace BlazorPdf;
 
 /// <summary>
 /// Builds a small, valid multi-page PDF entirely in memory (with a correct xref table)

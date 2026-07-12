@@ -1,9 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Canvas mode emits painted content as a display list (replayed onto a
@@ -14,7 +12,7 @@ namespace BlazorPdf.Tests;
 /// </summary>
 public class CanvasRendererTests
 {
-    private static CanvasRenderResult Render(string content)
+    private static BlazorPdfCanvasRenderResult Render(string content)
     {
         var bodies = new List<string>
         {
@@ -25,11 +23,11 @@ public class CanvasRendererTests
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new CanvasRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfCanvasRenderer(doc.Pages[0], doc.XRef).Render();
     }
 
-    private static List<JsonElement> Ops(CanvasRenderResult result) =>
+    private static List<JsonElement> Ops(BlazorPdfCanvasRenderResult result) =>
         JsonSerializer.Deserialize<List<JsonElement>>(result.OpsJson)!;
 
     private static string Code(JsonElement op) => op[0].GetString()!;
@@ -111,8 +109,8 @@ public class CanvasRendererTests
                 "/Extend [true true] >>",
             TestPdf.Stream("q 100 100 200 100 re W n /Sh0 sh Q"),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        var result = new CanvasRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var result = new BlazorPdfCanvasRenderer(doc.Pages[0], doc.XRef).Render();
         var ops = Ops(result);
 
         var sh = ops.Single(o => Code(o) == "sh");
@@ -137,8 +135,8 @@ public class CanvasRendererTests
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             TestPdf.Stream("0.9 0.2 0.2 rg 40 700 100 50 re f"),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        var renderer = new HtmlRenderer(doc.Pages[0], doc.XRef);
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var renderer = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef);
         string html = renderer.Render();
 
         Assert.Null(renderer.CanvasOpsJson);            // no display list by default

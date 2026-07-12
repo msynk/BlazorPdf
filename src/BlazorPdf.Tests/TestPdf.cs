@@ -1,7 +1,6 @@
 using System.Text;
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Assembles minimal but spec-valid PDF byte streams (header, indirect objects,
@@ -84,10 +83,10 @@ internal static class TestPdf
     }
 }
 
-/// <summary>An <see cref="IXRef"/> for object graphs built in-memory (no indirect refs).</summary>
-internal sealed class InlineXRef : IXRef
+/// <summary>An <see cref="IBlazorPdfXRef"/> for object graphs built in-memory (no indirect refs).</summary>
+internal sealed class InlineXRef : IBlazorPdfXRef
 {
-    public object? Fetch(Ref reference, bool suppressEncryption = false) => null;
+    public object? Fetch(BlazorPdfRef reference, bool suppressEncryption = false) => null;
     public object? FetchIfRef(object? value, bool suppressEncryption = false)
-        => value is Ref ? null : value;
+        => value is BlazorPdfRef ? null : value;
 }

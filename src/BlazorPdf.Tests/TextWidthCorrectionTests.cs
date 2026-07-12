@@ -1,8 +1,6 @@
 using System.Text.RegularExpressions;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// The text layer emits each run's PDF-computed advance (data-w) plus a
@@ -22,8 +20,8 @@ public class TextWidthCorrectionTests
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
     }
 
     [Fact]

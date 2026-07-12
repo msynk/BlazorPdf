@@ -1,7 +1,6 @@
 using System.Text;
-using BlazorPdf.Core.Fonts;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Phase 3.3: parse an embedded Type1 program and wrap it as OpenType/CFF. The
@@ -15,7 +14,7 @@ public class Type1FontTests
     {
         byte[] t1 = BuildMinimalType1();
 
-        var font = Type1Font.Parse(t1);
+        var font = BlazorPdfType1Font.Parse(t1);
         Assert.NotNull(font);
         Assert.True(font!.CharStrings.ContainsKey("A"));
 
@@ -24,7 +23,7 @@ public class Type1FontTests
         Assert.Equal(700, outline!.AdvanceWidth);
         Assert.True(outline.Segments.Count >= 3); // move + 2 lines
 
-        byte[]? otf = CffFontWriter.FromType1(font, "TestFont");
+        byte[]? otf = BlazorPdfCffFontWriter.FromType1(font, "TestFont");
         Assert.NotNull(otf);
         Assert.Equal(0x4F54544Fu, ReadU32(otf!, 0)); // 'OTTO'
         Assert.True(HasTable(otf!, "CFF "), "missing CFF table");
@@ -36,8 +35,8 @@ public class Type1FontTests
     [Fact]
     public void Rejects_non_type1_data()
     {
-        Assert.Null(Type1Font.Parse(new byte[] { 1, 2, 3, 4 }));
-        Assert.Null(Type1Font.Parse(Encoding.ASCII.GetBytes("just some text no eexec")));
+        Assert.Null(BlazorPdfType1Font.Parse(new byte[] { 1, 2, 3, 4 }));
+        Assert.Null(BlazorPdfType1Font.Parse(Encoding.ASCII.GetBytes("just some text no eexec")));
     }
 
     // The CFF the writer produces must round-trip through the CFF parser (glyph
@@ -45,19 +44,19 @@ public class Type1FontTests
     [Fact]
     public void Cff_roundtrips_through_parser_and_wrapper()
     {
-        var font = Type1Font.Parse(BuildMinimalType1())!;
-        byte[] otf = CffFontWriter.FromType1(font, "TestFont")!;
+        var font = BlazorPdfType1Font.Parse(BuildMinimalType1())!;
+        byte[] otf = BlazorPdfCffFontWriter.FromType1(font, "TestFont")!;
         byte[] cff = ExtractTable(otf, "CFF ");
         Assert.NotEmpty(cff);
 
-        var parser = CffFontParser.Parse(cff);
+        var parser = BlazorPdfCffFontParser.Parse(cff);
         Assert.NotNull(parser);
         Assert.True(parser!.NumGlyphs >= 2);
         Assert.True(parser.NameToGid.ContainsKey("A"), "CFF charset name 'A' not recovered");
 
         var cmapMap = new Dictionary<int, int> { { 0x41, parser.NameToGid["A"] } };
-        byte[] cmap = BlazorPdf.Core.Fonts.CmapBuilder.BuildUnicodeCmap(cmapMap);
-        byte[]? wrapped = CffFontWriter.WrapBareCff(cff, parser.NumGlyphs, parser.FontMatrix, cmap, "X");
+        byte[] cmap = BlazorPdf.BlazorPdfCmapBuilder.BuildUnicodeCmap(cmapMap);
+        byte[]? wrapped = BlazorPdfCffFontWriter.WrapBareCff(cff, parser.NumGlyphs, parser.FontMatrix, cmap, "X");
 
         Assert.NotNull(wrapped);
         Assert.Equal(0x4F54544Fu, ReadU32(wrapped!, 0)); // 'OTTO'

@@ -1,9 +1,5 @@
-using BlazorPdf.Core;
-using BlazorPdf.Core.Filters;
-using BlazorPdf.Core.Functions;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Regression tests for the small correctness fixes: 1.7 (Crypt filter / non-inline
@@ -13,14 +9,14 @@ namespace BlazorPdf.Tests;
 public class EasyFixesTests
 {
     // A minimal xref that resolves references from a number->object map.
-    private sealed class MapXRef : IXRef
+    private sealed class MapXRef : IBlazorPdfXRef
     {
         private readonly Dictionary<int, object?> _map;
         public MapXRef(Dictionary<int, object?> map) => _map = map;
-        public object? Fetch(Ref reference, bool suppressEncryption = false)
+        public object? Fetch(BlazorPdfRef reference, bool suppressEncryption = false)
             => _map.TryGetValue(reference.Num, out var v) ? v : null;
         public object? FetchIfRef(object? value, bool suppressEncryption = false)
-            => value is Ref r ? Fetch(r) : value;
+            => value is BlazorPdfRef r ? Fetch(r) : value;
     }
 
     // 2.9 — GetInt32 must honour its "-1 at end" contract when fewer than four
@@ -28,14 +24,14 @@ public class EasyFixesTests
     [Fact]
     public void GetInt32_returns_minus_one_at_eof()
     {
-        var stream = new PdfStream(new byte[] { 0x01, 0x02, 0x03 }); // only 3 bytes
+        var stream = new BlazorPdfStream(new byte[] { 0x01, 0x02, 0x03 }); // only 3 bytes
         Assert.Equal(-1, stream.GetInt32());
     }
 
     [Fact]
     public void GetInt32_reads_full_word()
     {
-        var stream = new PdfStream(new byte[] { 0x00, 0x00, 0x01, 0x02 });
+        var stream = new BlazorPdfStream(new byte[] { 0x00, 0x00, 0x01, 0x02 });
         Assert.Equal(0x0102, stream.GetInt32());
     }
 
@@ -44,8 +40,8 @@ public class EasyFixesTests
     [Fact]
     public void Separation_none_paints_nothing()
     {
-        var arr = new List<object?> { Name.Get("Separation"), Name.Get("None"), Name.Get("DeviceGray") };
-        var cs = ColorSpace.Create(arr, new InlineXRef(), null);
+        var arr = new List<object?> { BlazorPdfName.Get("Separation"), BlazorPdfName.Get("None"), BlazorPdfName.Get("DeviceGray") };
+        var cs = BlazorPdfColorSpace.Create(arr, new InlineXRef(), null);
         Assert.Equal(((byte)255, (byte)255, (byte)255), cs.GetRgb([1.0]));
     }
 
@@ -53,8 +49,8 @@ public class EasyFixesTests
     [Fact]
     public void Separation_named_colorant_is_not_forced_white()
     {
-        var arr = new List<object?> { Name.Get("Separation"), Name.Get("Spot"), Name.Get("DeviceGray") };
-        var cs = ColorSpace.Create(arr, new InlineXRef(), null);
+        var arr = new List<object?> { BlazorPdfName.Get("Separation"), BlazorPdfName.Get("Spot"), BlazorPdfName.Get("DeviceGray") };
+        var cs = BlazorPdfColorSpace.Create(arr, new InlineXRef(), null);
         // With full tint (1.0) and no transform, the gray fallback is black.
         Assert.Equal(((byte)0, (byte)0, (byte)0), cs.GetRgb([1.0]));
     }
@@ -65,14 +61,14 @@ public class EasyFixesTests
     public void Exponential_function_resolves_indirect_endpoint_numbers()
     {
         var xref = new MapXRef(new Dictionary<int, object?> { [10] = 0.0, [11] = 1.0 });
-        var dict = new Dict();
+        var dict = new BlazorPdfDict();
         dict.Set("FunctionType", 2.0);
         dict.Set("Domain", new List<object?> { 0.0, 1.0 });
-        dict.Set("C0", new List<object?> { new Ref(10, 0) });
-        dict.Set("C1", new List<object?> { new Ref(11, 0) });
+        dict.Set("C0", new List<object?> { new BlazorPdfRef(10, 0) });
+        dict.Set("C1", new List<object?> { new BlazorPdfRef(11, 0) });
         dict.Set("N", 1.0);
 
-        var fn = PdfFunction.Create(dict, xref)!;
+        var fn = BlazorPdfFunction.Create(dict, xref)!;
         // Midpoint interpolates C0..C1 = 0..1 -> 0.5. Unresolved refs would give 0.
         Assert.Equal(0.5, fn.Eval([0.5])[0], 3);
     }
@@ -83,11 +79,11 @@ public class EasyFixesTests
     public void NonInline_stream_ignores_F_as_filter()
     {
         byte[] raw = { 1, 2, 3, 4, 5 };
-        var dict = new Dict();
-        dict.Set("F", Name.Get("FlateDecode")); // would be nonsense to inflate raw bytes
-        var stream = new PdfStream(raw, 0, raw.Length, dict);
+        var dict = new BlazorPdfDict();
+        dict.Set("F", BlazorPdfName.Get("FlateDecode")); // would be nonsense to inflate raw bytes
+        var stream = new BlazorPdfStream(raw, 0, raw.Length, dict);
 
-        Assert.Equal(raw, StreamDecoder.Decode(stream)); // inline: false (default)
+        Assert.Equal(raw, BlazorPdfStreamDecoder.Decode(stream)); // inline: false (default)
     }
 
     // 1.7 — the Crypt filter is not a data transform in the decode pipeline; it
@@ -96,11 +92,11 @@ public class EasyFixesTests
     public void Crypt_filter_is_a_passthrough()
     {
         byte[] raw = { 9, 8, 7, 6 };
-        var dict = new Dict();
-        dict.Set("Filter", Name.Get("Crypt"));
-        var stream = new PdfStream(raw, 0, raw.Length, dict);
+        var dict = new BlazorPdfDict();
+        dict.Set("Filter", BlazorPdfName.Get("Crypt"));
+        var stream = new BlazorPdfStream(raw, 0, raw.Length, dict);
 
-        Assert.Equal(raw, StreamDecoder.Decode(stream));
+        Assert.Equal(raw, BlazorPdfStreamDecoder.Decode(stream));
     }
 
     // 4.9 — inside a Type3 `d1` glyph, colour operators are suppressed (the glyph
@@ -133,8 +129,8 @@ public class EasyFixesTests
                 "/QuadPoints [10 40 100 40 10 60 100 60  10 10 190 30 10 10 190 30] " +
                 "/A << /S /URI /URI (https://example.com/) >> >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         int anchors = html.Split("<a href=\"https://example.com/\"").Length - 1;
         Assert.Equal(2, anchors);
@@ -152,8 +148,8 @@ public class EasyFixesTests
             "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] " +
                 "/A << /S /URI /URI (https://example.com/) >> >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         int anchors = html.Split("<a href=\"https://example.com/\"").Length - 1;
         Assert.Equal(1, anchors);
@@ -170,7 +166,7 @@ public class EasyFixesTests
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
         };
         // TestPdf writes a "%PDF-1.7" header; the catalog /Version raises it to 2.0.
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         Assert.Equal("2.0", doc.Version);
     }
 
@@ -178,7 +174,7 @@ public class EasyFixesTests
     [Fact]
     public void Permissions_unencrypted_grants_everything()
     {
-        var perms = new PdfPermissions(0, encrypted: false);
+        var perms = new BlazorPdfPermissions(0, encrypted: false);
         Assert.True(perms.CanPrint);
         Assert.True(perms.CanCopy);
         Assert.True(perms.CanModify);
@@ -191,7 +187,7 @@ public class EasyFixesTests
     {
         // Bit 3 (print) set, bit 5 (copy) clear.
         int p = 1 << (3 - 1);
-        var perms = new PdfPermissions(p, encrypted: true);
+        var perms = new BlazorPdfPermissions(p, encrypted: true);
         Assert.True(perms.CanPrint);
         Assert.False(perms.CanCopy);
         Assert.False(perms.CanModify);
@@ -209,7 +205,7 @@ public class EasyFixesTests
         Array.Copy(junk, 0, combined, 0, junk.Length);
         Array.Copy(pdf, 0, combined, junk.Length, pdf.Length);
 
-        var doc = PdfDocument.Load(combined);
+        var doc = BlazorPdfDocument.Load(combined);
 
         Assert.Equal(1, doc.PageCount);
         Assert.NotNull(doc.Pages[0].Resources);
@@ -242,8 +238,8 @@ public class EasyFixesTests
                 "/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode" + interpEntry),
             TestPdf.Stream("q 100 0 0 100 20 20 cm /Im0 Do Q"),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
     }
 
     // 4.6 — the sh operator honours a shading /BBox by clipping the painted
@@ -269,8 +265,8 @@ public class EasyFixesTests
             "<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >>",
             TestPdf.Stream("/Sh0 sh"),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
     }
 
     private static string RenderType3WithGlyph(string glyphProc)
@@ -290,7 +286,7 @@ public class EasyFixesTests
             // Outer content sets the fill colour green before showing the glyph.
             TestPdf.Stream("0 1 0 rg BT /F1 100 Tf 20 20 Td (a) Tj ET"),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
     }
 }

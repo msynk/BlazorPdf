@@ -1,25 +1,23 @@
-using BlazorPdf.Core;
-using BlazorPdf.Core.Fonts;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class PdfFontTests
 {
-    private static readonly IXRef Xref = new InlineXRef();
+    private static readonly IBlazorPdfXRef Xref = new InlineXRef();
 
-    private static PdfFont SimpleFont(object? encoding)
+    private static BlazorPdfFont SimpleFont(object? encoding)
     {
-        var dict = new Dict();
-        dict.Set("Subtype", Name.Get("Type1"));
-        dict.Set("BaseFont", Name.Get("Helvetica"));
+        var dict = new BlazorPdfDict();
+        dict.Set("Subtype", BlazorPdfName.Get("Type1"));
+        dict.Set("BaseFont", BlazorPdfName.Get("Helvetica"));
         if (encoding is not null)
         {
             dict.Set("Encoding", encoding);
         }
-        return PdfFont.Create(dict, Xref);
+        return BlazorPdfFont.Create(dict, Xref);
     }
 
-    private static string Decode(PdfFont font, params byte[] codes)
+    private static string Decode(BlazorPdfFont font, params byte[] codes)
         => string.Concat(font.Decode(codes).Select(g => g.Unicode));
 
     [Fact]
@@ -39,17 +37,17 @@ public class PdfFontTests
     [Fact]
     public void Named_base_encoding_macroman()
     {
-        var font = SimpleFont(Name.Get("MacRomanEncoding"));
+        var font = SimpleFont(BlazorPdfName.Get("MacRomanEncoding"));
         Assert.Equal("\u2013", Decode(font, 0xD0)); // endash in MacRoman
     }
 
     [Fact]
     public void Differences_override_base_encoding()
     {
-        var enc = new Dict();
-        enc.Set("Type", Name.Get("Encoding"));
+        var enc = new BlazorPdfDict();
+        enc.Set("Type", BlazorPdfName.Get("Encoding"));
         // code 65 -> eacute, code 66 -> B (an explicit letter remap)
-        enc.Set("Differences", new List<object?> { 65.0, Name.Get("eacute"), Name.Get("B") });
+        enc.Set("Differences", new List<object?> { 65.0, BlazorPdfName.Get("eacute"), BlazorPdfName.Get("B") });
 
         var font = SimpleFont(enc);
         // 65 -> é, 66 -> B (remapped), 67 -> C (from base encoding)
@@ -61,8 +59,8 @@ public class PdfFontTests
     {
         // Regression: a /Differences entry mapping a code to a single-letter
         // glyph name must win over the base-encoding character at that code.
-        var enc = new Dict();
-        enc.Set("Differences", new List<object?> { 65.0, Name.Get("Z") });
+        var enc = new BlazorPdfDict();
+        enc.Set("Differences", new List<object?> { 65.0, BlazorPdfName.Get("Z") });
         var font = SimpleFont(enc);
         Assert.Equal("Z", Decode(font, 65)); // not the base "A"
     }

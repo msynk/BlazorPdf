@@ -1,6 +1,5 @@
 @namespace BlazorPdf
 @using System.Globalization
-@using BlazorPdf.Core
 
 <div class="blazorpdf-viewer" style="height:@Height" @ref="_viewerRef">
     @if (_loading)
@@ -46,13 +45,13 @@
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
                 </button>
                 <select class="blazorpdf-select" aria-label="Zoom level" @onchange="OnFitChanged" disabled="@(_pages.Count == 0)">
-                    @if (_zoomMode == PdfZoomMode.Custom)
+                    @if (_zoomMode == BlazorPdfZoomMode.Custom)
                     {
                         <option value="Custom" selected>@((int)Math.Round(_zoom * 100))%</option>
                     }
-                    <option value="FitWidth" selected="@(_zoomMode == PdfZoomMode.FitWidth)">Fit width</option>
-                    <option value="FitPage" selected="@(_zoomMode == PdfZoomMode.FitPage)">Fit page</option>
-                    <option value="ActualSize" selected="@(_zoomMode == PdfZoomMode.ActualSize)">100%</option>
+                    <option value="FitWidth" selected="@(_zoomMode == BlazorPdfZoomMode.FitWidth)">Fit width</option>
+                    <option value="FitPage" selected="@(_zoomMode == BlazorPdfZoomMode.FitPage)">Fit page</option>
+                    <option value="ActualSize" selected="@(_zoomMode == BlazorPdfZoomMode.ActualSize)">100%</option>
                 </select>
             </div>
 
@@ -162,13 +161,13 @@
 @code {
     private async Task OnFitChanged(ChangeEventArgs e)
     {
-        if (Enum.TryParse<PdfZoomMode>(e.Value?.ToString(), out var mode))
+        if (Enum.TryParse<BlazorPdfZoomMode>(e.Value?.ToString(), out var mode))
         {
             await SetZoomMode(mode);
         }
     }
 
-    private RenderFragment RenderOutline(IReadOnlyList<OutlineItem> items) =>
+    private RenderFragment RenderOutline(IReadOnlyList<BlazorPdfOutlineItem> items) =>
         @<ul class="blazorpdf-outline-list">
             @foreach (var item in items)
             {

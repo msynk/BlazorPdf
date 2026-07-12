@@ -1,8 +1,6 @@
 using System.Text.RegularExpressions;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Selection is handled by a separate, coalesced text layer (the pdf.js model):
@@ -25,8 +23,8 @@ public class TextLayerSelectionTests
             fontObj,
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
     }
 
     [Fact]

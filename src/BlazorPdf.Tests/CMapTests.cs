@@ -1,7 +1,6 @@
 using System.Text;
-using BlazorPdf.Core.Fonts;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>Phase 3.4: embedded CMap parsing maps character codes to CIDs.</summary>
 public class CMapTests
@@ -15,7 +14,7 @@ public class CMapTests
             "1 begincidrange\n<0020> <007E> 1\nendcidrange\n" +
             "1 begincidchar\n<00A0> 200\nendcidchar\n" +
             "endcmap end end";
-        var map = CMap.Parse(Encoding.ASCII.GetBytes(cmap));
+        var map = BlazorPdfCMap.Parse(Encoding.ASCII.GetBytes(cmap));
 
         Assert.Equal(2, map.CodeLength);
         Assert.Equal(1, map.Lookup(0x20));       // range start -> CID 1
@@ -27,7 +26,7 @@ public class CMapTests
     [Fact]
     public void Identity_maps_code_to_cid()
     {
-        Assert.True(CMap.Identity.IsIdentity);
-        Assert.Equal(0x4E2D, CMap.Identity.Lookup(0x4E2D));
+        Assert.True(BlazorPdfCMap.Identity.IsIdentity);
+        Assert.Equal(0x4E2D, BlazorPdfCMap.Identity.Lookup(0x4E2D));
     }
 }

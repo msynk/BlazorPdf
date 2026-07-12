@@ -1,7 +1,5 @@
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>Phase 4A rendering-fidelity regressions.</summary>
 public class Phase4FidelityTests
@@ -23,8 +21,8 @@ public class Phase4FidelityTests
             "<< /Type /OCG /Name (Layer1) >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         Assert.Contains("VisibleText", html);
         Assert.DoesNotContain("HiddenText", html);
@@ -46,8 +44,8 @@ public class Phase4FidelityTests
             "<< /Type /OCG /Name (Layer1) >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        string html = new HtmlRenderer(doc.Pages[0], doc.XRef).Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        string html = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render();
 
         Assert.Contains("ShownText", html);
     }
@@ -65,8 +63,8 @@ public class Phase4FidelityTests
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
             "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /Dest [4 0 R /Fit] >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        var renderer = new HtmlRenderer(doc.Pages[0], doc.XRef)
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var renderer = new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef)
         {
             DestinationResolver = d => doc.ResolveDestinationPage(d),
         };

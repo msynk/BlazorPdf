@@ -1,6 +1,5 @@
-using BlazorPdf.Core.Fonts;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Phase 3.1: the sfnt sanitizer must turn a structurally-sloppy embedded font
@@ -12,8 +11,8 @@ public class TrueTypeSanitizerTests
     [Fact]
     public void Rejects_non_sfnt_data()
     {
-        Assert.Null(TrueTypeSanitizer.Sanitize(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }));
-        Assert.Null(TrueTypeSanitizer.Sanitize(Array.Empty<byte>()));
+        Assert.Null(BlazorPdfTrueTypeSanitizer.Sanitize(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }));
+        Assert.Null(BlazorPdfTrueTypeSanitizer.Sanitize(Array.Empty<byte>()));
     }
 
     [Fact]
@@ -22,7 +21,7 @@ public class TrueTypeSanitizerTests
         // Build a minimal sfnt with the required tables listed OUT of tag order
         // ("maxp","head","hhea") and deliberately wrong checksums.
         byte[] font = BuildFont(new[] { "maxp", "head", "hhea" });
-        byte[]? clean = TrueTypeSanitizer.Sanitize(font);
+        byte[]? clean = BlazorPdfTrueTypeSanitizer.Sanitize(font);
 
         Assert.NotNull(clean);
         // Valid sfnt header.
@@ -48,7 +47,7 @@ public class TrueTypeSanitizerTests
     {
         // A subset font lacking OS/2, name and post — OTS requires them.
         byte[] font = BuildFont(new[] { "head", "hhea", "maxp", "cmap" });
-        byte[]? clean = TrueTypeSanitizer.Sanitize(font);
+        byte[]? clean = BlazorPdfTrueTypeSanitizer.Sanitize(font);
 
         Assert.NotNull(clean);
         Assert.True(HasTable(clean!, "OS/2"), "OS/2 not synthesized");
@@ -76,7 +75,7 @@ public class TrueTypeSanitizerTests
     {
         // Missing "head" -> not sanitizable.
         byte[] font = BuildFont(new[] { "maxp", "hhea", "cmap" });
-        Assert.Null(TrueTypeSanitizer.Sanitize(font));
+        Assert.Null(BlazorPdfTrueTypeSanitizer.Sanitize(font));
     }
 
     // ----- helpers: assemble a tiny sfnt -----

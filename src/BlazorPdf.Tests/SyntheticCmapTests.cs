@@ -1,6 +1,5 @@
-using BlazorPdf.Core.Fonts;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Phase 3.2: recover glyph mappings from a subset TrueType font and emit a clean
@@ -12,7 +11,7 @@ public class SyntheticCmapTests
     public void CmapBuilder_emits_valid_windows_unicode_subtable()
     {
         var map = new Dictionary<int, int> { { 0x41, 3 }, { 0x42, 4 }, { 0x61, 7 } };
-        byte[] cmap = CmapBuilder.BuildUnicodeCmap(map);
+        byte[] cmap = BlazorPdfCmapBuilder.BuildUnicodeCmap(map);
 
         Assert.Equal(0, U16(cmap, 0)); // version
         Assert.Equal(1, U16(cmap, 2)); // numTables
@@ -31,7 +30,7 @@ public class SyntheticCmapTests
 
         var encoding = new string[256];
         encoding[0x41] = "A";
-        byte[]? cmap = SfntGlyphMapper.BuildSyntheticCmap(
+        byte[]? cmap = BlazorPdfSfntGlyphMapper.BuildSyntheticCmap(
             font, encoding, symbolic: false, code => code == 0x41 ? "A" : "", out var mappedCodes);
 
         Assert.NotNull(cmap);

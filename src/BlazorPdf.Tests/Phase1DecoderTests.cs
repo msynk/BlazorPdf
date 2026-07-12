@@ -1,9 +1,7 @@
 using System.IO.Compression;
 using System.Text;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Filters;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Regression tests for the Phase 1 decoder correctness fixes.
@@ -17,7 +15,7 @@ public class Phase1DecoderTests
     {
         // Two bytes = four 4-bit samples: 0x11, 0x11 (deltas all 1).
         byte[] encoded = { 0x11, 0x11 };
-        byte[] decoded = Predictor.Apply(encoded, predictor: 2, colors: 1, bitsPerComponent: 4, columns: 4);
+        byte[] decoded = BlazorPdfPredictor.Apply(encoded, predictor: 2, colors: 1, bitsPerComponent: 4, columns: 4);
 
         // Expect samples 1,2,3,4 -> nibbles 0x12, 0x34.
         Assert.Equal(new byte[] { 0x12, 0x34 }, decoded);
@@ -42,12 +40,12 @@ public class Phase1DecoderTests
         // Corrupt the 4-byte Adler-32 trailer so strict validation would throw.
         compressed[^1] ^= 0xFF;
 
-        var dict = new Dict();
-        dict.Set("Filter", Name.Get("FlateDecode"));
+        var dict = new BlazorPdfDict();
+        dict.Set("Filter", BlazorPdfName.Get("FlateDecode"));
         dict.Set("Length", (double)compressed.Length);
-        var stream = new PdfStream(compressed, 0, compressed.Length, dict);
+        var stream = new BlazorPdfStream(compressed, 0, compressed.Length, dict);
 
-        byte[] result = StreamDecoder.Decode(stream);
+        byte[] result = BlazorPdfStreamDecoder.Decode(stream);
         Assert.Equal(raw, result);
     }
 
@@ -58,10 +56,10 @@ public class Phase1DecoderTests
     [Fact]
     public void Ccitt_g4_decodes_vertical_left_mode()
     {
-        var p = new CcittParams { K = -1, Columns = 4, Rows = 1, BlackIs1 = false, EndOfBlock = false };
+        var p = new BlazorPdfCcittParams { K = -1, Columns = 4, Rows = 1, BlackIs1 = false, EndOfBlock = false };
         byte[] data = { 0b0000_1010 }; // 000010 (VL2) + 1 (V0) + pad
 
-        byte[] result = CcittFaxDecoder.Decode(data, p);
+        byte[] result = BlazorPdfCcittFaxDecoder.Decode(data, p);
 
         // Row is white [0,2) then black [2,4). With BlackIs1=false the decoder
         // emits white as 1 bits -> 0b11000000 = 0xC0.

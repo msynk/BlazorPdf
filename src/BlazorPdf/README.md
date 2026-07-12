@@ -13,38 +13,38 @@ The engine is being built incrementally, module by module.
 
 | Engine area                             | BlazorPdf module                                  | Status |
 | --------------------------------------- | ------------------------------------------------- | ------ |
-| Object primitives                       | `Core/Primitives.cs`                              | Done   |
-| Byte streams                            | `Core/BaseStream.cs`, `Core/PdfStream.cs`         | Done   |
-| Lexer / parser                          | `Core/Lexer.cs`, `Core/Parser.cs`                 | Done   |
+| Object primitives                       | `Core/BlazorPdfPrimitives.cs`                              | Done   |
+| Byte streams                            | `Core/BlazorPdfBaseStream.cs`, `Core/BlazorPdfStream.cs`         | Done   |
+| Lexer / parser                          | `Core/BlazorPdfLexer.cs`, `Core/BlazorPdfParser.cs`                 | Done   |
 | Filters (Flate/LZW/ASCII/RunLength)     | `Core/Filters/*`                                  | Done   |
-| Cross-reference tables and streams      | `Core/XRef.cs`                                    | Done   |
-| Document, catalog and page tree         | `Core/PdfDocument.cs`, `Core/PdfPage.cs`          | Done   |
+| Cross-reference tables and streams      | `Core/BlazorPdfXRef.cs`                                    | Done   |
+| Document, catalog and page tree         | `Core/BlazorPdfDocument.cs`, `Core/BlazorPdfPage.cs`          | Done   |
 | Content-stream operators                | `Core/Content/*`                                  | Done   |
 | Functions (types 0/2/3/4)               | `Core/Functions/*`                                | Done   |
-| Color spaces                            | `Core/Render/ColorSpace.cs`                       | Done   |
-| Raster images                           | `Core/Render/PdfImage.cs` + `PngEncoder.cs`       | Done   |
-| Axial/radial shadings                   | `Core/Render/CssShadingBuilder.cs`                | Done   |
-| Shading pattern fills                   | `HtmlRenderer` `scn` shading patterns (CSS gradients) | Done |
-| Tiling pattern fills                    | `HtmlRenderer` `RunPatternCell` (replayed cells)  | Done   |
-| Baseline JPEG decoder (CMYK/masked)     | `Core/Filters/JpegDecoder.cs`                     | Done   |
-| Optional content groups (layers)        | `HtmlRenderer` `BDC /OC … EMC`                    | Done   |
-| Damaged-file recovery                   | `XRef` object-scan rebuild + `PdfDocument.Warnings` | Done |
-| TrueType sfnt sanitizer                 | `Core/Fonts/TrueTypeSanitizer.cs`                 | Done   |
-| Type0 embedded CMap (code→CID)          | `Core/Fonts/CMap.cs`                              | Done   |
-| Text extraction / search index          | `Core/Content/TextExtractor.cs`, `PdfPage.ExtractText()` | Done |
-| Internal GoTo links                     | `HtmlRenderer` link overlay + viewer navigation   | Done   |
-| Tagged-PDF structure tree               | `PdfDocument.StructureTree`                       | Done   |
-| AcroForm field extraction               | `PdfDocument.FormFields`                          | Done   |
-| Blend modes (`BM`)                      | `HtmlRenderer` `mix-blend-mode`                   | Done   |
-| CCITTFaxDecode                          | `Core/Filters/CcittFaxDecoder.cs` (G3/G4)         | Done   |
+| Color spaces                            | `Core/Render/BlazorPdfColorSpace.cs`                       | Done   |
+| Raster images                           | `Core/Render/BlazorPdfImage.cs` + `BlazorPdfPngEncoder.cs`       | Done   |
+| Axial/radial shadings                   | `Core/Render/BlazorPdfCssShadingBuilder.cs`                | Done   |
+| Shading pattern fills                   | `BlazorPdfHtmlRenderer` `scn` shading patterns (CSS gradients) | Done |
+| Tiling pattern fills                    | `BlazorPdfHtmlRenderer` `RunPatternCell` (replayed cells)  | Done   |
+| Baseline JPEG decoder (CMYK/masked)     | `Core/Filters/BlazorPdfJpegDecoder.cs`                     | Done   |
+| Optional content groups (layers)        | `BlazorPdfHtmlRenderer` `BDC /OC … EMC`                    | Done   |
+| Damaged-file recovery                   | `BlazorPdfXRef` object-scan rebuild + `BlazorPdfDocument.Warnings` | Done |
+| TrueType sfnt sanitizer                 | `Core/Fonts/BlazorPdfTrueTypeSanitizer.cs`                 | Done   |
+| Type0 embedded CMap (code→CID)          | `Core/Fonts/BlazorPdfCMap.cs`                              | Done   |
+| Text extraction / search index          | `Core/Content/BlazorPdfTextExtractor.cs`, `BlazorPdfPage.ExtractText()` | Done |
+| Internal GoTo links                     | `BlazorPdfHtmlRenderer` link overlay + viewer navigation   | Done   |
+| Tagged-PDF structure tree               | `BlazorPdfDocument.StructureTree`                       | Done   |
+| AcroForm field extraction               | `BlazorPdfDocument.FormFields`                          | Done   |
+| Blend modes (`BM`)                      | `BlazorPdfHtmlRenderer` `mix-blend-mode`                   | Done   |
+| CCITTFaxDecode                          | `Core/Filters/BlazorPdfCcittFaxDecoder.cs` (G3/G4)         | Done   |
 | Encryption (standard handler)           | `Core/Security/*` (RC4, AES-128/256, R2–R6, user/owner password, managed crypto for WASM) | Done |
-| Annotations                             | `HtmlRenderer` annotation pass (appearances + links) | Done |
-| Embedded font programs                  | `PdfFont` + `@font-face` emission (TrueType/OpenType) | Done |
-| Page rendering                          | `Core/Render/HtmlRenderer.cs`                     | Mostly |
+| Annotations                             | `BlazorPdfHtmlRenderer` annotation pass (appearances + links) | Done |
+| Embedded font programs                  | `BlazorPdfFont` + `@font-face` emission (TrueType/OpenType) | Done |
+| Page rendering                          | `Core/Render/BlazorPdfHtmlRenderer.cs`                     | Mostly |
 
 Working today: parsing (tables + xref streams + object streams) with **damaged-file
 recovery** (a corrupt cross-reference table is rebuilt by scanning the file, with
-diagnostics on `PdfDocument.Warnings`), Flate/LZW/ASCII/RunLength/CCITT(G3/G4,
+diagnostics on `BlazorPdfDocument.Warnings`), Flate/LZW/ASCII/RunLength/CCITT(G3/G4,
 including 2-D vertical modes and EOL/K>0) filters with predictors, the page tree,
 content-stream operators (with per-operator error recovery), simple and Type0 font
 text extraction (ToUnicode + WinAnsi + Core-14 metrics), HTML output with vector

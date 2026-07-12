@@ -1,8 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
-using BlazorPdf.Core.Security;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Phase 4.14: the managed MD5/AES used for WebAssembly must produce byte-for-byte
@@ -19,7 +18,7 @@ public class ManagedCryptoTests
     public void Managed_md5_matches_platform(string text)
     {
         byte[] input = Encoding.ASCII.GetBytes(text);
-        Assert.Equal(MD5.HashData(input), ManagedMd5.Hash(input));
+        Assert.Equal(MD5.HashData(input), BlazorPdfManagedMd5.Hash(input));
     }
 
     [Theory]
@@ -42,7 +41,7 @@ public class ManagedCryptoTests
         byte[] cipher = aes.EncryptCbc(plain, iv, PaddingMode.None);
 
         // Managed encrypt matches platform, and managed decrypt recovers plaintext.
-        Assert.Equal(cipher, ManagedAes.CbcEncrypt(key, iv, plain));
-        Assert.Equal(plain, ManagedAes.CbcDecrypt(key, iv, cipher));
+        Assert.Equal(cipher, BlazorPdfManagedAes.CbcEncrypt(key, iv, plain));
+        Assert.Equal(plain, BlazorPdfManagedAes.CbcDecrypt(key, iv, cipher));
     }
 }

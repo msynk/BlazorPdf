@@ -1,6 +1,5 @@
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>Phase 6.6: tagged-PDF logical structure tree exposure.</summary>
 public class StructTreeTests
@@ -19,7 +18,7 @@ public class StructTreeTests
             "<< /Type /StructElem /S /H1 /K [0] >>",
             "<< /Type /StructElem /S /Figure /Alt (A chart) /K [1] >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         var tree = doc.StructureTree;
 
         Assert.Single(tree);
@@ -33,7 +32,7 @@ public class StructTreeTests
     [Fact]
     public void Untagged_document_has_empty_structure()
     {
-        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var doc = BlazorPdfDocument.Load(TestPdf.HelloWorld());
         Assert.Empty(doc.StructureTree);
     }
 }

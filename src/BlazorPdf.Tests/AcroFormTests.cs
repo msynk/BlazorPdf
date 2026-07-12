@@ -1,6 +1,5 @@
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>Phase 6.5: AcroForm field extraction.</summary>
 public class AcroFormTests
@@ -17,7 +16,7 @@ public class AcroFormTests
             "<< /FT /Tx /T (name) /V (Alice) >>",
             "<< /FT /Btn /T (agree) /V /Yes >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         var fields = doc.FormFields;
 
         Assert.Equal(2, fields.Count);
@@ -41,7 +40,7 @@ public class AcroFormTests
             "<< /T (address) /Kids [6 0 R] >>",
             "<< /FT /Tx /T (city) /V (Oslo) >>",
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
         var fields = doc.FormFields;
 
         Assert.Single(fields);
@@ -52,7 +51,7 @@ public class AcroFormTests
     [Fact]
     public void Document_without_form_has_no_fields()
     {
-        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var doc = BlazorPdfDocument.Load(TestPdf.HelloWorld());
         Assert.Empty(doc.FormFields);
     }
 }

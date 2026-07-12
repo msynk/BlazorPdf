@@ -1,6 +1,5 @@
-using BlazorPdf.Core.Filters;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class JpegDecoderTests
 {
@@ -14,7 +13,7 @@ public class JpegDecoderTests
     public void Decodes_dimensions_of_a_baseline_jpeg()
     {
         byte[] bytes = Convert.FromBase64String(OnePixelJpegBase64);
-        JpegImage? img = JpegDecoder.Decode(bytes);
+        BlazorPdfJpegImage? img = BlazorPdfJpegDecoder.Decode(bytes);
 
         Assert.NotNull(img);
         Assert.Equal(1, img!.Width);
@@ -26,7 +25,7 @@ public class JpegDecoderTests
     [Fact]
     public void Returns_null_for_non_jpeg_data()
     {
-        Assert.Null(JpegDecoder.Decode(new byte[] { 1, 2, 3, 4, 5 }));
-        Assert.Null(JpegDecoder.Decode(Array.Empty<byte>()));
+        Assert.Null(BlazorPdfJpegDecoder.Decode(new byte[] { 1, 2, 3, 4, 5 }));
+        Assert.Null(BlazorPdfJpegDecoder.Decode(Array.Empty<byte>()));
     }
 }

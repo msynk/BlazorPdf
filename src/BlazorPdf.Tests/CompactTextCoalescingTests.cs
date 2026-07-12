@@ -1,8 +1,6 @@
 using System.Text.RegularExpressions;
-using BlazorPdf.Core;
-using BlazorPdf.Core.Render;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Compact text coalescing merges same-line, same-style substitute-font painted
@@ -20,7 +18,7 @@ public class CompactTextCoalescingTests
         "1 0 0 1 40 700 Tm [(H) -10 (e) -10 (l) -10 (l) -10 (o)] TJ " +
         "1 0 0 1 40 680 Tm [(w) -10 (o) -10 (r) -10 (l) -10 (d)] TJ ET";
 
-    private static string Render(string content, PdfTextCoalescing coalescing)
+    private static string Render(string content, BlazorPdfTextCoalescing coalescing)
     {
         var bodies = new List<string>
         {
@@ -31,8 +29,8 @@ public class CompactTextCoalescingTests
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             TestPdf.Stream(content),
         };
-        var doc = PdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
-        return new HtmlRenderer(doc.Pages[0], doc.XRef) { TextCoalescing = coalescing }.Render();
+        var doc = BlazorPdfDocument.Load(TestPdf.Build(bodies, rootObjNum: 1));
+        return new BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef) { TextCoalescing = coalescing }.Render();
     }
 
     /// <summary>Painted spans are those without the selection marker.</summary>
@@ -42,7 +40,7 @@ public class CompactTextCoalescingTests
     [Fact]
     public void Exact_keeps_one_painted_span_per_run()
     {
-        string html = Render(PerGlyphTwoLines, PdfTextCoalescing.Exact);
+        string html = Render(PerGlyphTwoLines, BlazorPdfTextCoalescing.Exact);
 
         Assert.Equal(10, PaintedSpans(html)); // 10 characters -> 10 painted spans
     }
@@ -50,7 +48,7 @@ public class CompactTextCoalescingTests
     [Fact]
     public void Compact_merges_each_line_into_one_painted_span()
     {
-        string html = Render(PerGlyphTwoLines, PdfTextCoalescing.Compact);
+        string html = Render(PerGlyphTwoLines, BlazorPdfTextCoalescing.Compact);
 
         Assert.Equal(2, PaintedSpans(html)); // one per visual line
         Assert.Contains(">Hello<", html);
@@ -66,7 +64,7 @@ public class CompactTextCoalescingTests
         string html = Render(
             "BT /F1 12 Tf 1 0 0 1 40 700 Tm (red) Tj " +
             "1 0 0 0.5 rg 1 0 0 1 70 700 Tm (blue) Tj ET",
-            PdfTextCoalescing.Compact);
+            BlazorPdfTextCoalescing.Compact);
 
         Assert.Equal(2, PaintedSpans(html));
         Assert.Contains(">red<", html);
@@ -81,7 +79,7 @@ public class CompactTextCoalescingTests
         string html = Render(
             "BT /F1 12 Tf 1 0 0 1 40 700 Tm (cell1) Tj " +
             "1 0 0 1 300 700 Tm (cell2) Tj ET",
-            PdfTextCoalescing.Compact);
+            BlazorPdfTextCoalescing.Compact);
 
         Assert.Equal(2, PaintedSpans(html));
         Assert.Contains(">cell1<", html);
@@ -95,7 +93,7 @@ public class CompactTextCoalescingTests
         string html = Render(
             "BT /F1 12 Tf 1 0 0 1 40 700 Tm (foo) Tj " +
             "1 0 0 1 62 700 Tm (bar) Tj ET",
-            PdfTextCoalescing.Compact);
+            BlazorPdfTextCoalescing.Compact);
 
         Assert.Equal(1, PaintedSpans(html));
         Assert.Contains(">foo bar<", html);
@@ -109,7 +107,7 @@ public class CompactTextCoalescingTests
         string html = Render(
             "BT /F1 12 Tf 1 0 0 1 40 700 Tm (under) Tj ET " +
             "0 0 0 rg 30 690 100 20 re f",
-            PdfTextCoalescing.Compact);
+            BlazorPdfTextCoalescing.Compact);
 
         int textPos = html.IndexOf(">under<", StringComparison.Ordinal);
         int rectPos = html.IndexOf("clip-path", StringComparison.Ordinal);

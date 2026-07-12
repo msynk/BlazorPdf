@@ -1,25 +1,23 @@
-using BlazorPdf.Core;
-using BlazorPdf.Core.Functions;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 public class FunctionTests
 {
     private static readonly InlineXRef XRef = new();
 
-    private static PdfFunction BuildSampled2D()
+    private static BlazorPdfFunction BuildSampled2D()
     {
         // A 2-input, 1-output sampled function on a 2x2 grid. Samples are stored
         // with the first input dimension varying fastest: index = i0 + size0*i1.
         //   (0,0)=0  (1,0)=255  (0,1)=255  (1,1)=255
-        var dict = new Dict();
+        var dict = new BlazorPdfDict();
         dict.Set("FunctionType", 0.0);
         dict.Set("Domain", new List<object?> { 0.0, 1.0, 0.0, 1.0 });
         dict.Set("Range", new List<object?> { 0.0, 1.0 });
         dict.Set("Size", new List<object?> { 2.0, 2.0 });
         dict.Set("BitsPerSample", 8.0);
-        var stream = new PdfStream([0, 255, 255, 255], dict: dict);
-        return PdfFunction.Create(stream, XRef)!;
+        var stream = new BlazorPdfStream([0, 255, 255, 255], dict: dict);
+        return BlazorPdfFunction.Create(stream, XRef)!;
     }
 
     [Fact]
@@ -38,13 +36,13 @@ public class FunctionTests
     [Fact]
     public void Exponential_function_interpolates()
     {
-        var dict = new Dict();
+        var dict = new BlazorPdfDict();
         dict.Set("FunctionType", 2.0);
         dict.Set("Domain", new List<object?> { 0.0, 1.0 });
         dict.Set("C0", new List<object?> { 0.0, 0.0, 0.0 });
         dict.Set("C1", new List<object?> { 1.0, 0.5, 0.0 });
         dict.Set("N", 1.0);
-        var fn = PdfFunction.Create(dict, XRef)!;
+        var fn = BlazorPdfFunction.Create(dict, XRef)!;
 
         double[] mid = fn.Eval([0.5]);
         Assert.Equal(0.5, mid[0], 3);

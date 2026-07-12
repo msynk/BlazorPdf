@@ -1,12 +1,11 @@
 using System.Text;
-using BlazorPdf.Core;
 
-namespace BlazorPdf.Tests;
+namespace BlazorPdf;
 
 /// <summary>
 /// Regression tests for Phase 2 damaged-file recovery: a document with a broken
 /// cross-reference table must still open by scanning for objects (like pdf.js
-/// XRef.indexObjects), reporting the problem via <see cref="PdfDocument.Warnings"/>.
+/// XRef.indexObjects), reporting the problem via <see cref="BlazorPdfDocument.Warnings"/>.
 /// </summary>
 public class Phase2RecoveryTests
 {
@@ -21,7 +20,7 @@ public class Phase2RecoveryTests
         string corrupted = s[..idx] + "startxref\n999999\n%%EOF";
         byte[] bytes = Encoding.Latin1.GetBytes(corrupted);
 
-        var doc = PdfDocument.Load(bytes);
+        var doc = BlazorPdfDocument.Load(bytes);
 
         Assert.Equal(1, doc.PageCount);
         Assert.NotEmpty(doc.Warnings);
@@ -37,10 +36,10 @@ public class Phase2RecoveryTests
         int cut = s.LastIndexOf("\nxref", StringComparison.Ordinal);
         byte[] truncated = pdf[..cut];
 
-        var doc = PdfDocument.Load(truncated);
+        var doc = BlazorPdfDocument.Load(truncated);
 
         Assert.Equal(1, doc.PageCount);
-        Assert.Contains("Hello", new BlazorPdf.Core.Render.HtmlRenderer(doc.Pages[0], doc.XRef).Render());
+        Assert.Contains("Hello", new BlazorPdf.BlazorPdfHtmlRenderer(doc.Pages[0], doc.XRef).Render());
         Assert.NotEmpty(doc.Warnings);
     }
 
@@ -48,7 +47,7 @@ public class Phase2RecoveryTests
     [Fact]
     public void Clean_file_has_no_warnings()
     {
-        var doc = PdfDocument.Load(TestPdf.HelloWorld());
+        var doc = BlazorPdfDocument.Load(TestPdf.HelloWorld());
         Assert.Empty(doc.Warnings);
     }
 }
