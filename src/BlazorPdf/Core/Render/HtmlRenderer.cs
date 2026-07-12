@@ -65,6 +65,36 @@ public sealed class HtmlRenderer
     private bool _selActive;
     private double _selLeft, _selTop, _selFontHeight, _selBaseY, _selStartX, _selEndX;
 
+    /// <summary>
+    /// How painted text runs are emitted. <see cref="PdfTextCoalescing.Compact"/>
+    /// merges same-line, same-style substitute-font runs into one span per visual
+    /// line (embedded-font runs always stay per-run exact). Default is
+    /// <see cref="PdfTextCoalescing.Exact"/>.
+    /// </summary>
+    public PdfTextCoalescing TextCoalescing { get; set; } = PdfTextCoalescing.Exact;
+
+    // Pending coalesced PAINTED line (Compact mode only). Unlike the selection
+    // layer (emitted at page end), painted text must keep its place in paint order,
+    // so the pending line is flushed into _html whenever any non-text operator
+    // executes, whenever an ineligible run arrives, and at page end.
+    private readonly StringBuilder _paintText = new();
+    private bool _paintActive;
+    private bool _paintGlyph; // any merged run painted via PUA codepoints
+    private double _paintLeft, _paintTop, _paintFontHeight, _paintBaseY, _paintStartX, _paintEndX;
+    private double _paintXScale = 1;
+    private string _paintTail = string.Empty;
+
+    // Operators a pending coalesced painted line may safely survive across: text
+    // positioning/state ops touch nothing painted, and the show-text ops manage
+    // the pending line themselves inside EmitText. Every other operator might
+    // paint or mutate _html (rects, images, q/Q group divs, BDC/EMC diversion),
+    // so it flushes the pending line first to preserve paint order.
+    private static readonly HashSet<string> TextOnlyOperators = new()
+    {
+        "BT", "ET", "Tj", "TJ", "'", "\"", "Td", "TD", "Tm", "T*",
+        "Tf", "Tc", "Tw", "Tz", "TL", "Ts", "Tr",
+    };
+
     private readonly StringBuilder _fontFaces;         // document-wide accumulator (shared)
     private readonly HashSet<string> _emittedFamilies; // dedup across pages (shared)
     private readonly StringBuilder _pageFaces = new();  // faces first seen on THIS page
@@ -153,6 +183,8 @@ public sealed class HtmlRenderer
 
         RunOps(ops);
 
+        FlushPaintedLine(); // pending Compact-mode text, inside any open groups
+
         while (_openGroups > 0)
         {
             _html.Append("</div>");
@@ -179,9 +211,14 @@ public sealed class HtmlRenderer
         // it captures selection. The container itself is transparent to pointer
         // events (clicks pass through to link annotations); only its spans opt back
         // in, so dragging over text selects while empty areas stay clickable.
+        // font-size:0 collapses the flow-level <br> separators (the spans set their
+        // own size): the brs still put line breaks in copied text, but their empty
+        // line boxes — which stack at the container's top-left — become zero-sized,
+        // so a multi-line selection no longer paints stray highlight blocks along
+        // the page's left edge.
         if (_selLayer.Length > 0)
         {
-            sb.Append("<div class=\"bp-text-layer\" style=\"position:absolute;inset:0;line-height:1;pointer-events:none\">");
+            sb.Append("<div class=\"bp-text-layer\" style=\"position:absolute;inset:0;line-height:1;font-size:0;pointer-events:none\">");
             sb.Append(_selLayer);
             sb.Append("</div>");
         }
@@ -227,6 +264,14 @@ public sealed class HtmlRenderer
         if (_type3ColorLocked && IsColorOperator(op.Operator))
         {
             return;
+        }
+        // Anything that could paint or mutate _html ends the pending coalesced
+        // painted line so it lands in correct paint order. Because the flush
+        // happens before the dispatch below, it also writes to the correct buffer
+        // around a BDC/EMC optional-content diversion.
+        if (_paintActive && !TextOnlyOperators.Contains(op.Operator))
+        {
+            FlushPaintedLine();
         }
         switch (op.Operator)
         {
@@ -1319,6 +1364,10 @@ public sealed class HtmlRenderer
     /// </summary>
     private void ShowType3Text(List<Glyph> glyphs)
     {
+        // Type3 glyphs paint graphics directly (below), reached via a whitelisted
+        // show-text operator — flush any pending coalesced line to keep paint order.
+        FlushPaintedLine();
+
         PdfFont font = _state.Font!;
         Matrix fontMatrix = font.Type3!.FontMatrix;
         bool visible = _state.RenderMode is not (3 or 7);
@@ -1445,10 +1494,102 @@ public sealed class HtmlRenderer
             // inline — the coalesced selection span alone carries the text.
             return;
         }
+
+        // Compact mode: coalesce painted runs into one span per visual line.
+        // Embedded fonts — including PUA glyph-mapped ones, which is how every
+        // embedded font in this engine paints — coalesce too: the browser lays the
+        // merged run out with the font's own advance widths, so only explicit TJ
+        // kerning between runs is approximated while data-w pins the line's total
+        // advance. (A gap-bridging space missing from a subset font falls through
+        // to the generic fallback in the font stack.) Only rotated/mirrored text
+        // is excluded — its geometry can't be reduced to a horizontal line.
+        if (TextCoalescing == PdfTextCoalescing.Compact
+            && a > 1e-3 && d > 1e-3
+            && Math.Abs(b) < 1e-3 && Math.Abs(c) < 1e-3)
+        {
+            AccumulatePaintedRun(renderText, glyphMapped: renderText != realText,
+                trm, left, top, fontHeight, targetWidth, a,
+                BuildPaintedStyleTail(fontHeight, doFill, doStroke, linear));
+            return;
+        }
+
         // A glyph-mapped run paints exact glyphs via PUA codepoints; a plain run
-        // paints its real text. Either way it is presentational only.
+        // paints its real text. Either way it is presentational only. An ineligible
+        // run first flushes any pending coalesced line to preserve paint order.
+        FlushPaintedLine();
         AppendTextSpan(renderText, fontHeight, targetWidth, left, top, linear,
             doFill, doStroke, glyphLayer: renderText != realText);
+    }
+
+    /// <summary>
+    /// Compact mode: merges a painted substitute-font run into the pending visual
+    /// line, or flushes it and starts a new one when the baseline, style, or
+    /// horizontal continuity breaks. Word gaps are bridged with a space; anything
+    /// wider (table cells, columns) or overlapping breaks the span so glyphs never
+    /// paint far from their true positions.
+    /// </summary>
+    private void AccumulatePaintedRun(string text, bool glyphMapped,
+        Matrix trm, double left, double top,
+        double fontHeight, double targetWidth, double xScale, string tail)
+    {
+        double baseX = trm.E;
+        double baseY = trm.F;
+
+        if (_paintActive
+            && tail == _paintTail
+            && Math.Abs(fontHeight - _paintFontHeight) <= _paintFontHeight * 0.01
+            && Math.Abs(baseY - _paintBaseY) <= fontHeight * 0.05)
+        {
+            // Gap to the previous run in the span's local space (1 local px = 1 CSS
+            // px before the transform; the transform scales x by xScale).
+            double gap = (baseX - _paintEndX) / xScale;
+            if (gap >= -0.15 * fontHeight && gap <= 0.9 * fontHeight)
+            {
+                if (gap > 0.15 * fontHeight && _paintText.Length > 0
+                    && _paintText[^1] != ' ' && text[0] != ' ')
+                {
+                    _paintText.Append(' ');
+                }
+                _paintText.Append(text);
+                _paintGlyph |= glyphMapped;
+                _paintEndX = baseX + targetWidth * xScale;
+                return;
+            }
+        }
+
+        FlushPaintedLine();
+        _paintActive = true;
+        _paintGlyph = glyphMapped;
+        _paintText.Append(text);
+        _paintLeft = left;
+        _paintTop = top;
+        _paintFontHeight = fontHeight;
+        _paintBaseY = baseY;
+        _paintStartX = baseX;
+        _paintEndX = baseX + targetWidth * xScale;
+        _paintXScale = xScale;
+        _paintTail = tail;
+    }
+
+    /// <summary>
+    /// Emits the pending coalesced painted line (Compact mode) as a single span,
+    /// width-corrected via <c>data-w</c> to the line's total PDF advance.
+    /// </summary>
+    private void FlushPaintedLine()
+    {
+        if (!_paintActive)
+        {
+            return;
+        }
+        // Unlike per-run glyph spans (no correction: their advances are already
+        // exact), a merged glyph line lost the TJ kerning between its runs, so it
+        // carries data-w and gets scaleX-pinned to the line's true total advance.
+        double width = (_paintEndX - _paintStartX) / _paintXScale;
+        EmitPaintedSpan(_paintText.ToString(), _paintLeft, _paintTop, _paintFontHeight,
+            glyphLayer: _paintGlyph, dataW: width, _paintTail);
+        _paintActive = false;
+        _paintGlyph = false;
+        _paintText.Clear();
     }
 
     /// <summary>
@@ -1552,21 +1693,23 @@ public sealed class HtmlRenderer
         double left, double top, string linear,
         bool doFill, bool doStroke, bool glyphLayer)
     {
-        _html.Append("<span");
-        if (glyphLayer)
-        {
-            _html.Append(" data-bp-glyph"); // painted glyphs; excluded from search
-        }
         // The painted glyph layer uses the embedded font's real advance metrics, so
         // it must NOT be width-corrected (that would re-stretch correct glyphs). Only
         // substitute-font runs get scaleX correction.
-        if (!glyphLayer && targetWidth > 0.01)
-        {
-            _html.Append(string.Create(CultureInfo.InvariantCulture, $" data-w=\"{targetWidth:0.###}\""));
-        }
-        _html.Append(string.Create(CultureInfo.InvariantCulture,
-            $" style=\"position:absolute;left:{left:0.##}px;top:{top:0.##}px;white-space:pre;line-height:1"));
-        _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
+        double dataW = glyphLayer ? 0 : targetWidth;
+        EmitPaintedSpan(text, left, top, fontHeight, glyphLayer, dataW,
+            BuildPaintedStyleTail(fontHeight, doFill, doStroke, linear));
+    }
+
+    /// <summary>
+    /// Builds the style suffix (everything after <c>font-size</c>) of a painted
+    /// text span from the current graphics state. In Compact mode this string
+    /// doubles as the run's style identity: runs coalesce only while it is
+    /// byte-identical, so any colour/stroke/font/transform change breaks the span.
+    /// </summary>
+    private string BuildPaintedStyleTail(double fontHeight, bool doFill, bool doStroke, string linear)
+    {
+        var sb = new StringBuilder();
         // Character/word spacing (Tc/Tw) are real inter-glyph gaps, not a stretch:
         // emit them as letter-/word-spacing so the run's natural width matches its
         // PDF advance (keeping the width-correction scaleX at ~1, no glyph spread).
@@ -1575,34 +1718,54 @@ public sealed class HtmlRenderer
             if (_state.CharSpacing != 0)
             {
                 double ls = _state.CharSpacing * fontHeight / _state.FontSize;
-                _html.Append(string.Create(CultureInfo.InvariantCulture, $";letter-spacing:{ls:0.###}px"));
+                sb.Append(string.Create(CultureInfo.InvariantCulture, $";letter-spacing:{ls:0.###}px"));
             }
             if (_state.WordSpacing != 0)
             {
                 double ws = _state.WordSpacing * fontHeight / _state.FontSize;
-                _html.Append(string.Create(CultureInfo.InvariantCulture, $";word-spacing:{ws:0.###}px"));
+                sb.Append(string.Create(CultureInfo.InvariantCulture, $";word-spacing:{ws:0.###}px"));
             }
         }
-        _html.Append(";color:").Append(!doFill ? "transparent" : _state.FillColor);
+        sb.Append(";color:").Append(!doFill ? "transparent" : _state.FillColor);
         if (doStroke)
         {
             double sw = Math.Max(_state.LineWidth * _state.Ctm.ScaleFactor, 0.1);
-            _html.Append(string.Create(CultureInfo.InvariantCulture,
+            sb.Append(string.Create(CultureInfo.InvariantCulture,
                 $";-webkit-text-stroke:{sw:0.###}px ")).Append(_state.StrokeColor);
         }
         // The painted layer never participates in selection or hit-testing; the
         // coalesced selection layer above owns both.
-        _html.Append(";user-select:none;-webkit-user-select:none;pointer-events:none");
-        AppendFontStyle(_html, _state.Font!);
-        _html.Append(";transform:").Append(linear).Append(";transform-origin:0 0");
+        sb.Append(";user-select:none;-webkit-user-select:none;pointer-events:none");
+        AppendFontStyle(sb, _state.Font!);
+        sb.Append(";transform:").Append(linear).Append(";transform-origin:0 0");
         if (doFill && _state.FillAlpha < 1)
         {
-            _html.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
+            sb.Append(string.Create(CultureInfo.InvariantCulture, $";opacity:{_state.FillAlpha:0.###}"));
         }
         if (_state.BlendMode.Length > 0)
         {
-            _html.Append(";mix-blend-mode:").Append(_state.BlendMode);
+            sb.Append(";mix-blend-mode:").Append(_state.BlendMode);
         }
+        return sb.ToString();
+    }
+
+    /// <summary>Writes one painted span (per-run or coalesced) into the page.</summary>
+    private void EmitPaintedSpan(string text, double left, double top, double fontHeight,
+        bool glyphLayer, double dataW, string tail)
+    {
+        _html.Append("<span");
+        if (glyphLayer)
+        {
+            _html.Append(" data-bp-glyph"); // painted glyphs; excluded from search
+        }
+        if (dataW > 0.01)
+        {
+            _html.Append(string.Create(CultureInfo.InvariantCulture, $" data-w=\"{dataW:0.###}\""));
+        }
+        _html.Append(string.Create(CultureInfo.InvariantCulture,
+            $" style=\"position:absolute;left:{left:0.##}px;top:{top:0.##}px;white-space:pre;line-height:1"));
+        _html.Append(string.Create(CultureInfo.InvariantCulture, $";font-size:{fontHeight:0.###}px"));
+        _html.Append(tail);
         _html.Append("\">");
         _html.Append(Escape(text));
         _html.Append("</span>");

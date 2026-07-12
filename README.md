@@ -91,6 +91,7 @@ Register nothing special - the component ships its own JS module under
 | `Height`            | `string`              | `"780px"`      | CSS height of the viewer container.          |
 | `ShowToolbar`       | `bool`                | `true`         | Show the toolbar.                            |
 | `InitialZoomMode`   | `PdfZoomMode`         | `FitWidth`     | Initial zoom behavior.                       |
+| `TextCoalescing`    | `PdfTextCoalescing`   | `Exact`        | `Compact` merges same-line, same-style text runs into one span per line — far fewer DOM nodes on per-glyph PDFs, with small intra-line position drift (kerning between runs is approximated). Rotated text always stays exact. |
 | `OnDocumentLoaded`  | `EventCallback`       | -              | Raised after a document loads.               |
 | `OnError`           | `EventCallback<string>` | -            | Raised on load/render failure.               |
 

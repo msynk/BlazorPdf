@@ -39,6 +39,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
     private int _currentPage = 1;
     private double _zoom = 1.0;
     private PdfZoomMode _zoomMode = PdfZoomMode.FitWidth;
+    private PdfTextCoalescing _textCoalescing; // last applied; changes re-render pages
     private int _rotation;
     private bool _showThumbnails;
     private bool _showOutline;
@@ -76,6 +77,15 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     /// <summary>The initial zoom behavior.</summary>
     [Parameter] public PdfZoomMode InitialZoomMode { get; set; } = PdfZoomMode.FitWidth;
+
+    /// <summary>
+    /// How painted text is emitted. <see cref="PdfTextCoalescing.Compact"/> merges
+    /// same-line, same-style runs into one span per visual line — far fewer DOM
+    /// nodes on per-glyph PDFs, with small intra-line position drift (explicit
+    /// kerning between runs is approximated). Rotated text always stays exact.
+    /// Default is <see cref="PdfTextCoalescing.Exact"/>.
+    /// </summary>
+    [Parameter] public PdfTextCoalescing TextCoalescing { get; set; } = PdfTextCoalescing.Exact;
 
     /// <summary>Raised when a document has finished loading.</summary>
     [Parameter] public EventCallback OnDocumentLoaded { get; set; }
@@ -137,14 +147,23 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
 
     protected override async Task OnParametersSetAsync()
     {
-        if (ReferenceEquals(_source, Source))
+        if (!ReferenceEquals(_source, Source))
         {
+            _source = Source;
+            _rotation = 0;
+            _currentPage = 1;
+            _textCoalescing = TextCoalescing;
+            await LoadAsync();
             return;
         }
-        _source = Source;
-        _rotation = 0;
-        _currentPage = 1;
-        await LoadAsync();
+        // Same document but the text-emission mode changed: invalidate and
+        // re-render the page fragments (same mechanism as rotation) so the new
+        // mode takes effect without reloading the document.
+        if (_textCoalescing != TextCoalescing)
+        {
+            _textCoalescing = TextCoalescing;
+            PreparePages();
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -397,6 +416,7 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         var renderer = new Core.Render.HtmlRenderer(page, _document.XRef, _fontStore, _rotation)
         {
             DestinationResolver = dest => _document.ResolveDestinationPage(dest),
+            TextCoalescing = TextCoalescing,
         };
         return new MarkupString(renderer.Render());
     }
@@ -409,7 +429,10 @@ public partial class BlazorPdfViewer : ComponentBase, IAsyncDisposable
         {
             return string.Empty;
         }
-        return new Core.Render.HtmlRenderer(_document.Pages[pageNumber - 1], _document.XRef, _rotation).Render();
+        return new Core.Render.HtmlRenderer(_document.Pages[pageNumber - 1], _document.XRef, _rotation)
+        {
+            TextCoalescing = TextCoalescing,
+        }.Render();
     }
 
     /// <summary>Extracts the visible text of a single page (1-based) for search or

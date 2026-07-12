@@ -64,7 +64,16 @@ public static class SamplePdf
                 // An axial gradient bar painted via the sh operator (clipped).
                 "q 320 120 250 60 re W n /Sh0 sh Q\n" +
                 // A decoded RGB image XObject (gradient).
-                "q 200 134 0 0 330 110 cm /Im0 Do Q";
+                "q 200 134 0 0 330 110 cm /Im0 Do Q\n" +
+                // A kerned, per-glyph paragraph (every character its own TJ
+                // element) - the layout many PDF generators emit. Lets the demo's
+                // "Compact text spans" option show its effect: Exact renders one
+                // DOM span per character here, Compact one span per line.
+                "0.25 0.25 0.30 rg\nBT /F1 10 Tf " +
+                PerGlyphLine(36, 96, "This paragraph is written one character per show-text run,") +
+                PerGlyphLine(36, 82, "the way many PDF generators kern text. Toggle the Compact") +
+                PerGlyphLine(36, 68, "text spans option to merge each line into a single element.") +
+                "ET";
 
             objects.Add($"<< /Length {Encoding.ASCII.GetByteCount(content)} >>\nstream\n{content}\nendstream");
         }
@@ -99,6 +108,22 @@ public static class SamplePdf
 
     private static string Escape(string text) =>
         text.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
+
+    /// <summary>
+    /// Emits one text line as a TJ array with every character its own element and
+    /// a small kerning adjustment between them (one show-text run per character).
+    /// </summary>
+    private static string PerGlyphLine(int x, int y, string text)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"1 0 0 1 {x} {y} Tm [");
+        foreach (var ch in text)
+        {
+            sb.Append('(').Append(Escape(ch.ToString())).Append(") -4 ");
+        }
+        sb.Append("] TJ ");
+        return sb.ToString();
+    }
 
     /// <summary>
     /// Builds an RGB image XObject containing a gradient, encoded with ASCIIHexDecode

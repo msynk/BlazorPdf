@@ -39,6 +39,9 @@ public class TextLayerSelectionTests
         Assert.Contains("data-bp-sel", html);
         // Its spans are transparent and positioned with real geometry + scaleX.
         Assert.Matches(new Regex("data-bp-sel[^>]*color:transparent"), html);
+        // The container collapses its flow-level <br> separators (font-size:0) so
+        // multi-line selection doesn't paint stray highlights at the page's edge.
+        Assert.Matches(new Regex("bp-text-layer[^>]*font-size:0"), html);
     }
 
     [Fact]
