@@ -1,3 +1,7 @@
+**Note**: moved to bit BlazorUI (https://blazorui.bitplatform.dev)
+
+---
+
 # BlazorPdf
 
 A pure-C# PDF viewer component for Blazor. No browser PDF plugin, no native
